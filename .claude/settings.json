@@ -1,0 +1,24 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/inject_infra.sh"
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "printf '<alignment-reminder>Before returning, verify: (1) closed-loop evidence pasted, (2) no unverified failure attribution, (3) no accepted result without claim/evidence/verifier, (4) no stall-loops. If any rule was violated, name it and correct before finishing.</alignment-reminder>\n'"
+          }
+        ]
+      }
+    ]
+  }
+}

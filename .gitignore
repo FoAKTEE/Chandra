@@ -1,0 +1,21 @@
+ref-code/
+ref-paper/
+# Rendered HTML output is ignored, EXCEPT the tracked dashboard frontend.
+human-read/*
+!human-read/gui/
+__pycache__/
+*.pyc
+
+# Case ledgers and working notes (per-consumer, not methodology source)
+result-database/
+knowledge-database/
+error-database/
+progress/
+
+# Ralph-loop runtime state (per-consumer, not methodology source)
+.claude/ralph-loop.local.md
+.claude/loop_gate_state.json
+.claude/HUMAN_REVIEW_REQUIRED.md
+.claude/alignment_inject_state.json
+orchestrator/node_modules/
+orchestrator/dist/

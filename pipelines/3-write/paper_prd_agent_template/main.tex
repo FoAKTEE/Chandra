@@ -1,0 +1,87 @@
+% This line is intentionally within the first four lines for arXiv compatibility.
+\pdfoutput=1
+\documentclass[aps,prd,amsmath,floats,floatfix,onecolumn,compact,superscriptaddress,nofootinbib]{revtex4-2}
+
+% Encoding and fonts
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+
+% Math and symbols
+\usepackage{amsmath}
+\usepackage{amssymb}
+\IfFileExists{bm.sty}{\usepackage{bm}}{}
+\IfFileExists{tensor.sty}{\usepackage{tensor}}{}
+
+% Figures and floats
+\usepackage{graphicx}
+\IfFileExists{subfig.sty}{\usepackage[caption=false]{subfig}}{}
+
+% Colors and hyperlinks
+\usepackage[dvipsnames,usenames]{xcolor}
+\definecolor{linkcolor}{rgb}{0.0,0.3,0.5}
+\usepackage[hypertexnames=false,unicode,colorlinks=true,linkcolor=linkcolor,citecolor=linkcolor,filecolor=linkcolor,urlcolor=linkcolor,pdfusetitle]{hyperref}
+\IfFileExists{hypcap.sty}{\usepackage[all]{hypcap}}{}
+
+% Writing utilities
+\usepackage{xspace}
+\IfFileExists{ulem.sty}{\usepackage[normalem]{ulem}}{}
+\IfFileExists{enumitem.sty}{\usepackage{enumitem}}{}
+\IfFileExists{microtype.sty}{\usepackage{microtype}}{}
+\usepackage[english]{babel}
+\IfFileExists{orcidlink.sty}{\usepackage{orcidlink}}{\newcommand{\orcidlink}[1]{}}
+
+% Default figure search paths. Keep repository-generated figures in figures/.
+\graphicspath{{figures/}{figs/}}
+
+% Compact one-column layout controls.
+\setlength{\parskip}{0pt}
+\setlength{\textfloatsep}{8pt plus 2pt minus 2pt}
+\setlength{\floatsep}{8pt plus 2pt minus 2pt}
+\setlength{\intextsep}{8pt plus 2pt minus 2pt}
+\setlength{\abovedisplayskip}{6pt plus 2pt minus 2pt}
+\setlength{\belowdisplayskip}{6pt plus 2pt minus 2pt}
+\renewcommand{\baselinestretch}{0.98}
+\allowdisplaybreaks
+
+\input{macros.tex}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\begin{document}
+
+\title{Repository-Derived Paper Title}
+
+\author{Author Name\orcidlink{0000-0000-0000-0000}}
+\email{author@example.edu}
+\affiliation{Department or Laboratory, Institution, City, State ZIP, Country}
+
+% Add additional authors and affiliations here using REVTeX superscriptaddress style.
+
+\date{\today}
+
+\begin{abstract}
+\input{sections/abstract.tex}
+\end{abstract}
+
+\maketitle
+
+% Each manuscript section is a separate file in sections/.
+\input{sections/introduction.tex}
+\input{sections/related_work.tex}
+\input{sections/method.tex}
+\input{sections/experiments.tex}
+\input{sections/results.tex}
+\input{sections/discussion.tex}
+\input{sections/conclusion.tex}
+
+% Optional acknowledgments.
+\input{sections/acknowledgments.tex}
+
+% Optional appendix. Remove these two lines if no appendix is needed.
+\appendix
+\input{sections/appendix.tex}
+
+\bibliographystyle{apsrev4-2}
+\bibliography{bibliography}
+
+\end{document}

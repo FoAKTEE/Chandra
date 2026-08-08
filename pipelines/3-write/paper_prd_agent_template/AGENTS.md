@@ -1,0 +1,1 @@
+For any task that asks an agent to generate, revise, or compile a paper from this repository, read and obey `PAPER_GENERATION_CONTRACT.md` first. Use `main.tex` as the only driver and keep every manuscript section in `sections/`.

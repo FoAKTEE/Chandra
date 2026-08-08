@@ -1,0 +1,28 @@
+% Shared macros for the manuscript.
+% Keep paper-wide macros here rather than in section files.
+
+\newcommand{\TODO}[1]{\textcolor{red}{\textbf{TODO: #1}}}
+\newcommand{\Note}[1]{\textcolor{blue}{\textbf{[#1]}}}
+\newcommand{\etal}{\textit{et al.}\xspace}
+\newcommand{\ie}{i.e.\xspace}
+\newcommand{\eg}{e.g.\xspace}
+
+% Default figure macro. The required default width is 0.8\columnwidth.
+\newcommand{\paperfig}[4][0.8\columnwidth]{%
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=#1]{#2}
+    \caption{#3}
+    \label{#4}
+\end{figure}%
+}
+
+% Default table skeleton for consistent spacing.
+\newcommand{\papertable}[3]{%
+\begin{table}[htbp]
+    \centering
+    \caption{#1}
+    \label{#2}
+    #3
+\end{table}%
+}

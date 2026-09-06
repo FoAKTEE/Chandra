@@ -52,38 +52,17 @@ within the session. Optimize for BETTER code, NEVER for MORE code.
     "principles": """\
 ## OPERATING PRINCIPLES — MUST FOLLOW
 
-- MUST treat all AI output as DRAFT. NEVER merge unverified output.
-- MUST prefer small, well-understood changes. NEVER produce large opaque diffs.
 - MUST slow down and escalate on: auth, migrations, concurrency, money,
   security, public APIs, data loss, perf-critical paths.
 - MUST run independent reviewers in ISOLATION on the first pass. NEVER let
   reviewers see each other's findings before they finish.
-- MUST treat agent consensus as a PRIORITIZATION signal only. NEVER treat
-  consensus as proof.
 - MUST validate lone-dissenter findings on high-impact code. NEVER dismiss a
   finding because only one reviewer flagged it.
-- MUST attach reproducible evidence (failing test, trace, query plan, PoC)
-  to every serious finding. NEVER accept "looks wrong" as a finding.
-- MUST require the human owner to explain the change end-to-end. If they
-  cannot, the PR is NOT READY.
-- MUST embed security review in normal review. NEVER defer to a final audit.
 - MUST balance KISS / DRY / AHA. NEVER abstract before the shared concept is
   stable and named.
 - NEVER spend review attention on lint-grade nits, formatting, personal style.
 - NEVER add features, refactors, error handling, or abstractions beyond what
   the task requires.
-""",
-    "tiers": """\
-## RISK TIERS — MUST CLASSIFY BEFORE CODING
-
-  R0  docs, typos                                       self + CI
-  R1  isolated helper, local UI copy                    self + tests + 1 reviewer
-  R2  normal feature/fix                                multi-lens AI review + human review
-  R3  auth, migration, concurrency, public API          independent multi-agent + security/perf lens + rollback plan
-  R4  crypto, irreversible migration, safety-critical   threat model + staged rollout + explicit approval
-
-MUST ESCALATE when: touches authz, data deletion/migration, concurrency,
-money/safety/legal, or the author cannot explain the change.
 """,
     "workflow": """\
 ## WORKFLOW — MUST EXECUTE IN ORDER
@@ -93,24 +72,10 @@ Each phase has a GATE. NEVER advance past a gate marked BLOCKED.
  1. INTAKE.            Problem, non-goals, risk tier, rollback, owner — all five explicit.
  2. GRILL DESIGN (R2+) Resolve hidden assumptions; inspect codebase before asking.
  3. MAP CODEBASE.      Entry points, call chains, data flows, existing tests, schemas, perms.
- 4. PLAN SMALLEST SLICE. One purpose per PR. Define rollback. Split if too broad.
- 5. IMPLEMENT WITH TESTS. Regression test per bug fix. Negative tests for security paths.
-                        Dry-run plan for migrations.
- 6. SELF-REVIEW.       Owner reviews their own PR before requesting any other review.
- 7. INDEPENDENT AI REVIEW. ≥2 for R2+, ≥3 for R3+. Reviewers isolated. Lenses listed below.
- 8. SYNTHESIZE AND VALIDATE. Compile findings before judging. Deduplicate. Validate against
-                        source/runtime evidence. Record dismissals with rationale.
- 9. REPAIR LOOP.       Fix critical/high first. Rerun tests AND review. If fixes balloon,
-                        STOP and reconsider the design.
-10. COMPREHENSION CHECK. Owner explains intent, flow changes, invariants, edge cases,
-                        failure modes, rollback, monitoring.
-11. MERGE DECISION.    Exactly one of:
-                        - READY_TO_MERGE      no unresolved critical/high; rollback acceptable
-                        - MERGE_AFTER_FIXES   bounded fixes remain; approach sound
-                        - NEEDS_REWORK        systemic problems in design or implementation
-                        - ABANDON             plan is wrong, unsafe, or not worth the cost
-12. POST-MERGE.        Every confirmed critical/high → regression test, checklist update,
-                        or reusable heuristic.
+ 4. QUESTION.          Constraints or requirements. Check if they are truly needed from first principle. Distinguish between ones enforced by current code vs ones naturally required by the domain.
+ 5. DELETE             Aggressively remove existing constructs. Purge things that could potentially be removed, and add back if it is found to be really needed. If not end up adding back at least 10% of things deleted, then one didn't delete enough.
+ 6. SIMPLIFY           Simplify the logic of each function, skip redundantly checking for guaranteed truth, and cut down the code. Never simplify and optimize a part or a process that should not exist the first place.
+ 7. ACCELERATE         Optimizing the performance of the code. Find the critical path, and remove the bottlenecks.
 """,
     "severity": """\
 ## SEVERITY POLICY — MUST ENFORCE
@@ -229,31 +194,9 @@ finding:
   suggested_fix: ""
   confidence: LOW|MEDIUM|HIGH
 """,
-    "merge-gate": """\
-## MERGE GATE CHECKLIST — ALL MUST BE PASS
-
-  [ ] One clear purpose; risk tier explicit              PASS / FAIL
-  [ ] Owner self-reviewed                                PASS / FAIL
-  [ ] Tests meaningful and passing                       PASS / FAIL
-  [ ] Independent review at required depth               PASS / FAIL
-  [ ] Critical/high fixed or explicitly risk-accepted    PASS / FAIL
-  [ ] Dismissed findings have rationale                  PASS / FAIL
-  [ ] Security-sensitive paths got security lens         PASS / FAIL
-  [ ] Perf claims have evidence, not guesses             PASS / FAIL
-  [ ] Migrations have rollback/recovery                  PASS / FAIL
-  [ ] Owner can explain the change front-to-back         PASS / FAIL
-  [ ] Rollout and monitoring clear                       PASS / FAIL
-  [ ] Follow-ups filed for deferred mediums              PASS / FAIL
-
-OVERALL: READY_TO_MERGE | MERGE_AFTER_FIXES | NEEDS_REWORK | ABANDON
-RULE: ANY [FAIL] BLOCKS MERGE.
-""",
     "anti-patterns": """\
 ## ANTI-PATTERNS — MUST REFUSE
 
-- SLOP CANNON              large AI PR, weak tests, shallow review, owner
-                           cannot explain it. REJECT OR SPLIT.
-- CONSENSUS LAUNDERING     treating agent agreement as proof. REQUIRE EVIDENCE.
 - LONE-DISSENTER DISMISSAL ignoring a finding because only one reviewer
                            flagged it. VALIDATE THE FINDING.
 - PREMATURE DRY            abstracting before the concept is stable.
@@ -262,13 +205,11 @@ RULE: ANY [FAIL] BLOCKS MERGE.
                            AUTOMATE STYLE; RESERVE REVIEW FOR JUDGMENT.
 - UNVALIDATED PERF CLAIM   "should be fast enough" without measurement.
                            REQUIRE QUERY PLAN, BENCHMARK, OR DRY RUN.
-- NO ROLLBACK STORY        merging a change that cannot be undone.
-                           REQUIRE ROLLBACK, FLAG, OR EXPLICIT RISK ACCEPTANCE.
 """,
     "bad-metrics": """\
 ## BAD METRICS — MUST NOT OPTIMIZE FOR
 
-Lines generated. Prompts sent. Suggestions accepted. Raw PR count.
+Lines generated. Prompts sent. Suggestions accepted.
 Superficial coverage bumps. Speed without quality.
 """,
     "target-state": """\
@@ -284,9 +225,9 @@ END OF POLICY. STATUS: ACTIVE.
 
 
 CODE_QUALITY_SECTION_ORDER = (
-    "intro", "principles", "tiers", "workflow", "severity",
+    "intro", "principles", "workflow", "severity",
     "kiss-dry-aha", "aha-checklist", "lenses", "finding-schema",
-    "merge-gate", "anti-patterns", "bad-metrics", "target-state",
+    "anti-patterns", "bad-metrics", "target-state",
 )
 
 # Bundles: a few refined prompt groups, each loaded as a single prompt for
@@ -294,9 +235,9 @@ CODE_QUALITY_SECTION_ORDER = (
 # the granular fallback.
 BUNDLES: dict[str, tuple[str, ...]] = {
     "orientation": ("intro", "principles", "bad-metrics", "target-state"),
-    "intake":      ("tiers", "workflow"),
+    "intake":      ("workflow", ),
     "abstraction": ("kiss-dry-aha", "aha-checklist"),
-    "review":      ("severity", "lenses", "finding-schema", "merge-gate", "anti-patterns"),
+    "review":      ("severity", "lenses", "finding-schema","anti-patterns"),
 }
 
 BUNDLE_ORDER = ("orientation", "intake", "abstraction", "review")

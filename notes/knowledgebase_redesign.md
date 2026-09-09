@@ -1,15 +1,20 @@
-# Knowledgebase redesign — diagnosis, refutation, staged proposal
+# Knowledgebase redesign — diagnosis, refutations, staged proposal
 
-Status: PROPOSAL, REFUTED ONCE (2026-09-09). Written from code reading and
-measurements (§9), then attacked by an independent fresh-context reviewer whose
-report reproduced every demonstration, downgraded three severities, and found
-six defects the first draft missed — the worst being that parallel appends
-corrupt the hash chain. The amendments are applied below; the refutation is
-recorded in §10. A second, cross-model refutation by GPT-6 is owed once the
-Codex quota resets (obligation `kb-gpt6-review`; prompts in
-`notes/kb_redesign/prompts/`). Nothing here is implemented; §6 is the DAG a
-self-optimize mission would work, and each defect below is an open obligation
-under paper `self`.
+Status: PROPOSAL, REFUTED TWICE (2026-09-09). Version 3. The first draft
+was written from code reading and measurements; a fresh-context reviewer
+refuted it and found the writer race; two independent GPT-6 analyses (data
+layer; agent-knowledge layer), sealed off from the note, were then merged in;
+finally a GPT-6 cross-model refutation of the committed note added fourteen
+defects and twelve amendments, all applied here. The reviews are archived
+verbatim in `notes/kb_redesign/reviews/`; §10 records what changed and where
+the reviewers still disagree. Nothing here is implemented. Every defect is an
+open obligation under paper `self` (`kb-*`, six blocking); §6 is the DAG a
+self-optimize mission would work.
+
+Reproduction marks: **[A]** author, **[R1]** first refutation (Claude),
+**[G-D]** GPT-6 data-model analysis, **[G-K]** GPT-6 agent-knowledge analysis,
+**[R2]** GPT-6 refutation. A defect carrying two or more marks was reproduced
+independently by each.
 
 ## 0. Scope
 
@@ -22,366 +27,542 @@ true and what to do:
 | mission memory | the three notes under gitignored `progress/`, the human digest, the runtime journal, packet WALs |
 | agent knowledge | `alignment.md`, `_common/contracts/*.md`, `INDEX.md`, `README.md`, `pipelines/*/spec.md`, the 33 skills and their registry, `AGENTS.md`, the prompts in `orchestrator/src/agents.ts` |
 
-They are treated together because they fail together: 29 of the drift
-obligations recorded on 2026-09-09 are prose describing data behavior the data
-layer does not have.
+They are treated together because they fail together: the 29 `drift-*`
+obligations are prose describing data behavior the data layer does not have,
+and the skill registry that was meant to keep skills true has holes of its own.
 
 ## 1. What the design is today
 
 One research graph — claims, obligations, assumptions, DAG nodes, results,
 trials, sources, evidence — stored as four append-only, per-paper JSONL files
 whose rows point at each other by free-text ids. Identity is "latest row per
-id wins" (`ledger_common.latest_per_node`, `result_database.latest_per_result`,
-`claims_database.latest_per_entry`). Correction is a new row with the same id;
-amendment is a row with `status: amended` plus prose in `notes`. Integrity is
-enforced at append for exactly five reference kinds (`claims_database.check_refs`:
-`result_ref`, `discharged_by`, `reduction_obligation`; `admission.py`: `::`
-dependencies and solid predecessors) and only at the dependent's own append.
-Every other reference — `node_ids` on results and claims, `node_id` on
-trials, `dependencies`, `source_ids`, `error_db_refs` — is unchecked text.
-Every read is a full-file scan; every append rewrites `summary.csv`; no
-append takes a lock. The TypeScript runtime rebuilds the mission from one
-paper's rows per wave through `python3 … query` subprocesses
-(`orchestrator/src/ledger.ts`; 14 launches per wave counted statically across
-`main.ts`, `scheduler.ts`, `jobs.ts`, `gate.ts`). Prose (contracts, specs,
-INDEX, README, skills) restates the data layer's behavior by hand; only the
-enum manifest (`_common/contract.py`) is shared mechanically.
+id wins"; correction is a new row with the same id; amendment is a row with
+`status: amended` plus prose in `notes`. Integrity is enforced at append for
+five reference kinds only (`claims_database.check_refs`: `result_ref`,
+`discharged_by`, `reduction_obligation`; `admission.py`: `::` dependencies
+and immediate solid predecessors), by existence, and only at the dependent's
+own append. Every read is a full-file scan; no reader verifies the chain; no
+append takes a lock; every append rewrites `summary.csv`. The TypeScript
+runtime rebuilds the mission from one paper's rows per wave through `python3
+… query` subprocesses with a 16 MiB output cap and swallows claim-ledger
+failures. Prose (contracts, specs, INDEX, README, 33 skills) restates the data
+layer's behavior by hand; only the enum manifest is shared mechanically, and
+even it spells the state cap and ledger filenames itself.
 
-## 2. Diagnosis — sixteen design problems, with evidence
+## 2. Diagnosis — thirty problems, grouped, with evidence
 
-Severity: **C** blocks correctness · **S** silently wrong · **T** costs time · **D** drift.
-"Demonstrated" = reproduced by both the author and the reviewer in throwaway
-repos (scripts in `notes/kb_redesign/`).
+Severity: **C** blocks correctness · **S** silently wrong · **T** costs time
+or liveness · **D** drift. Scripts for [A] demonstrations are in
+`notes/kb_redesign/`; the reviewers' scripts and receipts are described in
+their memos.
 
-**P11 (C) No cross-process lock: parallel appends corrupt the hash chain.**
-`ledger_common.chain_append` reads the tail hash, then appends, with no lock
-and no fsync (`_common/ledgers/ledger_common.py:134-149`). Four processes
-each appending 25 trials to one ledger broke the chain in 3 of 3 runs for the
-author (`break_at` 5, 1, 18 of 100) and 3 of 3 for the reviewer (`break_at`
-1, 6, 2). The runtime runs packets in `Promise.all` and non-packet jobs
-concurrently with them (`orchestrator/src/scheduler.ts:97`,
-`orchestrator/src/main.ts:187-190`), and workers flush with `append-batch`;
-the end-of-wave chain check then halts the mission `ledger_tampered`
-(`main.ts:239-245`, exit 8), and the chain cannot be repaired without editing
-hashed rows. `node_seq` is racy for the same reason
-(`knowledge_database.py:211-213`). This is the defect a real parallel mission
-hits first. Root cause: a multi-writer file with single-writer assumptions.
+### 2.1 Write path
 
-**P2 (S) Amendment and identity are conventions, not edges.** Re-appending
-`result_id r1` with the opposite claim and status `refuted` silently replaces
-the checked row in every latest-view; no link, no warning (demonstrated).
-Same-id re-append is the *documented* correction path
-(`result_database.py:20-22`, `claims_database.py:17-18`). `status: amended`
-rows are ignored by queries but redirect no edge, so the decompose spec's
-"collapse duplicates into `_shared::`" cannot be executed (drift
-`decompose-amended-aliases`). Root cause: no `supersedes` relation.
+**P11 (C) Parallel appends corrupt the hash chain.** [A][R1][R2]
+`chain_append` reads the tail hash, then appends, with no lock and no fsync
+(`_common/ledgers/ledger_common.py:134-149`). Four processes × 25 trials
+broke the chain in 3/3 runs for each of three reviewers (`break_at` 1–18 of
+100; `node_seq` collapsed to 72–81 distinct values). The runtime runs packets
+in `Promise.all` and jobs concurrently with them (`scheduler.ts:97`,
+`main.ts:187-190`); the end-of-wave check then halts `ledger_tampered`
+(exit 8) with no repair path. An exclusive `flock` around the whole append
+was a successful control [R2].
 
-**P12 (S) No downstream invalidation.** "Solid rests on solid" and "admitted
-cites a passing result" hold only at the dependent's own append
-(`admission.py:291-304`, `claims_database.py:143-154`). Demonstrated: demote a
-solid predecessor to `hypothesis` — its solid dependent stays solid; re-append
-a settling result as `refuted` — the claim it admitted stays `admitted`.
-Nothing re-checks, nothing reports.
+**P17 (C) No transaction or coherent read boundary.** [G-D][R2] Sequence
+allocation, dependency validation, hash append, CSV regeneration, and each
+consumer's reads are independent operations. Two real appends interleaved
+under control produced sequences `[1,2,2]` and a broken chain; a two-row
+batch keeps its first row when the second fails; a reader can see a half-
+written row (`Expecting value: line 1 column 326`); one legal append between
+two dashboard reads yields a node with no displayed history. A per-ledger
+lock alone does not serialize the gate's read set: with P locked, Q's
+predecessor can be demoted under Q's lock before P's append lands, leaving
+P's child solid on a hypothesis [R2].
 
-**P13 (S) Verifiability is proposer-defined.** A caller-supplied
-`evidence_sha256` string satisfies the checked/solid evidence rule
-(`admission.py:247,284`), and a proposer-chosen `verification.command` run
-with `shell=True` (`admission.py:126`) plus free-text evidence yields
-`solid` (demonstrated). The row records what the proposer's command printed.
-Already partly recorded as drift `adm-contract-evidence-sha`.
+**P18 (S) Batch identity and retry have no contract.** [G-D][R2] Batch
+dedup compares status + summary/statement before validation: rows that change
+only predecessors, owner, `node_ids`, or `blocking` — or that carry a failing
+verifier — are skipped as duplicates (`knowledge_database.py:240-243`,
+`claims_database.py:203`). Result and error batches have no request identity:
+replaying after a failed second row duplicates history, and replaying one
+trial three times triggers escalation.
 
-**P14 (S) Nodes cannot be retired.** `amended` is skipped by
-`latest_per_node` (`ledger_common.py:203-204`), so the prior status persists;
-`future` / `blocking` placeholders sit on the frontier every wave
-(`dag.ts:69-71`) and block `missionComplete` (`dag.ts:77-81`). Demonstrated:
-after amending `P::dup`, `readyFrontier` still lists it. Consolidating
-duplicates therefore *adds* work to every wave.
+**P19 (S) Progress is attributed by snapshot deltas, not events.** [G-D][R2]
+A packet that wrote nothing is reported `promoted` when a concurrent acquire
+job settles its obligation before the second snapshot (`scheduler.ts:119-130`).
+`unchecked → checked` is `no_progress` to the scheduler but progress to the
+gate; a new `unchecked` result is `promoted` to the scheduler but not to the
+gate (`gate.ts:33-39`).
 
-**P3 (S) Partial referential integrity.** A trial anchored to a node that does
-not exist is accepted and then appears in `progress` with `status: null`
-(demonstrated; no test covers it). Results and claims may cite `node_ids` that
-never existed. Readiness ignores open obligations although the spec promises
-otherwise (`dag.ts:31-36` collects them; `readyFrontier` never reads them;
-drift `dag-readiness-obligations`); the scheduler only marks such a node
-`rejected` and re-leases it next wave (`scheduler.ts:127-130`). A hypothesis
-cycle `P::a ⇄ P::b` is accepted and then silently omitted from `plan`
-(depth −1, no diagnostic).
+### 2.2 Identity and lifecycle
 
-**P1 (S/T) Cross-paper dependencies are never ready in the runtime.** The DAG
-promises one giant graph (`_shared::` nodes, `dag_mermaid.py merge`), but
-`buildMission` is fed one paper's rows (`main.ts:70-71,161-162`) and
-`readyFrontier` treats a predecessor absent from the mission as not solid
-(`dag.ts:66-73`). Demonstrated: `P::top` with the single, solid predecessor
-`_shared::base` is excluded; `P::solo` is ready. Downgraded from C because it
-fails loudly (`no_ready_jobs`, exit 3), the Python gate already resolves
-cross-paper predecessors (`admission.py:185-204`, so gate and frontier
-disagree), a mirror row in the paper's own ledger is a workaround, and the fix
-is a few lines of TypeScript, not a storage redesign.
+**P2 (S/D) Identity and amendment are conventions, not edges.** [A][R1][R2]
+Re-appending `result_id r1` with the opposite claim replaces it in every
+latest-view with no link (this is the documented correction path,
+`result_database.py:20-22`); `amended` rows redirect nothing. R2 downgrades
+the standalone case to D/T — history survives — and keeps S for the dependent
+support it leaves behind (P12).
 
-**P16 (S) Node identity is not global.** The same `node_id` in papers P and Q
-resolves to different rows depending on `paper_hint`
-(`admission.py:192-203`); the P1 workaround creates exactly this.
+**P16 (S) Node identity is not global.** [A][R2] `admission.find_knowledge_node`
+resolves the same `node_id` in two papers by `paper_hint`; `dag.ts:7-23`
+collapses imported duplicates by input order and overwrites row ownership
+with the mission paper.
 
-**P15 (S) The runtime swallows claim-ledger failures.** `Ledgers.claims()`
-returns `[]` on any CLI error (`ledger.ts:60-69`): one malformed line removes
-every acquire job, repair obligation, and discharged count for the wave; the
-chain verifier notices only at wave end.
+**P14 (T) Nodes cannot be retired.** [A][R1][R2] `latest_per_node` skips
+`amended` rows, so the prior status persists; `future`/`blocking`
+placeholders are leased every wave and block `missionComplete`.
 
-**P5 (S) Tamper evidence stops at the file tail and provenance is self-declared.**
-Deleting the last row of a chained ledger leaves `verify-chains` reporting
-`{"ok": true}` (demonstrated; drift `chain-tail-truncation`). Chain heads are
-anchored nowhere; `git_commit` on a row is the HEAD at append time, not a
-content anchor; `actor_role` is an environment variable (`admission.py:67-69`).
-`evidence_sha256` is computed once and read only by the renderer
-(`result_database.py:345`); a moved or edited artifact is never noticed.
+**P20 (S) Settlement is semantically unchecked at first admission.** [G-D][R2]
+`check_refs` tests existence only: an `exact_proof` claim is admitted on a
+`conjectural` or `empirical` result whose verdict is `fail`; an obligation is
+discharged by a refuted result or a hypothesis node (spot-checked [A]); a
+relaxed assumption may cite an obligation that has since become a claim.
+`--allow-missing-refs`, `--allow-missing-deps`, `--skip-exec` are recorded on
+rows that no runtime consumer inspects.
 
-**P4 (T) Every operation is O(n) in the ledger — but the cost is elsewhere
-than the first draft claimed.** Measured (§9): one knowledge append 4 → 49 →
-235 ms and one trial append 5 → 60 → 217 ms at 100 / 2,000 / 10,000 rows;
-`predecessors --transitive` 1 → 434 → 7,920 ms; a 200-row batch on 2,600 rows
-10–13 s. Profiled at 2,000 rows: 57% of an append is regenerating the tracked
-`summary.csv` (`ledger_common.py:104-120`), 15% re-reading the file for
-`node_seq`, 15% resolving one predecessor. Per wave, the runtime pays ~45 ms
-of interpreter start-up per CLI call × 14 calls ≈ 0.7 s at any N, versus
-≈ 0.12 s of actual scanning at 2,000 rows. At the owner's scale (10²–10³
-nodes per paper) ledger I/O is well under 1% of a wave's wall-clock; at 10⁴
-rows it is 1–5%. An index does not remove process start-up; consolidating the
-14 calls and untracking the CSV do.
+**P12 (S) No downstream invalidation.** [R1][G-D][R2] Solid-on-solid and
+admitted-cites-passing hold only at the dependent's own append. Demote a
+predecessor, refute a settling result: the solid dependent and the admitted
+claim stand, and a *new* solid node on the stale support is still accepted
+and offered as ready by the runtime.
 
-**P6 (D) Prose exceeds the code it describes, and hand-restates facts.**
-Contracts 31 KB + specs 57 KB + notes 58 KB, skills 249 KB; the Python and
-TypeScript they describe: 282 KB + 92 KB. `CHANDRA_ROLE` is explained in 30
-files, the ledger path in 19, the 10 KB cap in 13. Writing the skills against
-the code surfaced 29 drift findings in one day. Corrected root cause: a
-generator from schema to prose would have prevented only ~5 of the 29
-(enum / path / cap facts); ~10 are code bugs and ~14 are prose describing
-behavior (readiness, cadence, validation wiring) that only behavior tests can
-keep true.
+**P21 (S) Waiver provenance stops at the row.** [G-D] An ancestor admitted
+with `allow_missing_deps` carries the flag; its solid child and checked
+result carry nothing; `results.md` and `render-state` omit `skip_exec`.
 
-**P7 (D) Mission memory duplicates the ledgers and is not durable.** The
-iteration and nodal notes are renderings of journal state
-(`observer.ts:104-139`) written into gitignored `progress/`; consumers clone
-or vendor the repo and inherit the ignore, so `gitops.ts:42` never stages
-them; the research-state note mixes a generated block with hand prose under a
-lossy 10 KB pruner. The template's "history in git" does not exist for them
-(drift `progress-gitignored`).
+### 2.3 Graph
 
-**P8 (T) No retrieval beyond exact ids.** No error-ledger `query`
-(`error_database.py:657-720`), no search over statements / root causes / fix
-hypotheses, `duplicates` is a normalized-summary heuristic
-(`dag_mermaid.py:208-241`), and the 0-acquire "import the prior fix" path has
-no mechanism. Downgraded from C: workers have Bash, and `grep`/`jq` over a few
-MB of JSONL answers "was this failure mode seen on this node family" today.
-Semantic similarity would need an external dependency and is out of scope.
+**P1 (T) Cross-paper dependencies are never ready in the runtime.**
+[A][R1][R2] `buildMission` loads one paper (`main.ts:161-162`);
+`readyFrontier` treats an absent predecessor as not solid (`dag.ts:66-73`);
+the Python gate resolves globally, so gate and frontier disagree. Downgraded
+from C: the halt is loud (exit 3 when nothing else is ready), a mirror row
+works around it, and R2 notes the fix is more than a few lines because
+ownership and packet selection also change.
+
+**P3 (S) Partial referential integrity.** [A][R1][R2] Trials, results, and
+claims may anchor to nodes that do not exist; readiness ignores open
+obligations (`dag.ts:31-36` collects them, `readyFrontier` never reads them);
+completion ignores attached open repairs.
+
+**P22 (C) Cycles are admitted.** [G-D][R2] A solid node citing itself as
+predecessor is admitted (spot-checked [A]); a cross-paper cycle `P::a → Q::b
+→ P::a` with both solid is admitted with valid chains; the runtime hides
+cycles as depth −1 without a diagnostic.
+
+**P23 (T) "Obligations block readiness" deadlocks as stated.** [R2] The
+validator files an ownerless blocking repair on the rejected node
+(`validator.ts:190`); jobs special-case only `owner === "0-acquire"`
+(`jobs.ts:99`). Excluding obligated nodes from the frontier without a repair
+job yields `no_ready_jobs` (exit 3). Paper-level blockers with empty
+`node_ids` (the three blocking `kb-*` obligations today) are invisible to a
+node predicate; interiors of packets bypass `readyFrontier`
+(`scheduler.ts:45`); importing all papers lets one paper lease another's
+nodes.
+
+### 2.4 Integrity, provenance, verification
+
+**P5 (S) Tamper evidence stops at the file tail; provenance is self-declared.**
+[A][R1][R2] Deleting the last rows passes `verify-chains`; the unhashed legacy
+prefix is not covered either; `actor_role` is an environment variable.
+
+**P24 (C) Decisions and terminal exits precede integrity checks.** [G-D][R2]
+`main.ts:169,231` return `mission_complete` / `no_ready_jobs` before the
+chain check at `:239`; a tampered all-solid ledger and a torn claims file
+both produced exit 0 "mission complete". No reader verifies the chain, so a
+corrupted ledger keeps accepting appends (spot-checked [A]); `ledger.ts:31`
+drops the stdout that carries chain diagnostics.
+
+**P15 (S) The runtime swallows claim-ledger failures.** [R1][G-D][R2]
+`Ledgers.claims()` returns `[]` on any CLI error (`ledger.ts:60-69`); a
+malformed line, a missing CLI, or a valid 17.8 MB ledger over the 16 MiB
+`maxBuffer` all empty the wave's obligations silently.
+
+**P13 (S) Verifiability is proposer-defined.** [R1][G-D][R2] Presence of an
+`evidence_sha256` key — even `null` — satisfies the checked/solid rule
+(`admission.py:247,284`); a proposer-chosen `verification.command` plus free
+text yields `solid`; any existing artifact or resolvable commit satisfies the
+mechanical alternative. Root cause is not `shell=True` but unspecified
+verifier authority and non-immutable inputs.
+
+**P25 (S) Evidence has no lifecycle.** [G-D][R2] The artifact hash is
+computed once; modifying and then deleting the file leaves the result
+`checked` with valid chains; caller-supplied `execution` / `revision` /
+`timestamp` fields persist as observations.
+
+**P26 (C) Validation is not bound to the reviewed submission.** [R2]
+`adjudicateCandidate` appends `candidate.resultRow` without comparing it to
+`CLAIM.md`: a row for another paper, an opposite claim, or a row mutated
+inside the judge callback is admitted (`validator.ts:155-184`). Evidence
+paths are joined without containment — `../outside-pack.txt` landed outside
+the pack while `checkIsolation` passed. `parseJudgeVerdict` accepts empty
+reasons; packs are deleted; the journal keeps 500 characters of findings; the
+mission loop never calls the validator, so the production contract is
+undecided. Under the explicit `danger-full-access` override the pack is
+cwd + prompt only.
+
+### 2.5 Cost and transport
+
+**P4 (T) Costs are real but were mis-attributed.** [A][R1][G-D][R2] Full-file
+scans are linear; `predecessors --transitive` is O(V·N) (quadratic on a
+chain: 1 → 315 → 8,200 ms at 100 / 2,000 / 10,000 rows); 57–74 % of an append
+is regenerating the tracked `summary.csv`; a CLI call costs 46–56 ms at
+N=100 (of which ~21 ms is bare interpreter start-up) and 210–216 ms at
+N=10,000. The first draft's "every operation is O(n)", "14 launches", and
+"0.7 s per wave" were withdrawn: launch counts vary by path and no wave-time
+denominator was measured. A real sequential admission series reached 5,000
+rows in 286 s [G-D]. Transport: 5,000 rich rows (23 MB) exceed the bridge's
+16 MiB `maxBuffer` and the query fails although Python returned every row.
+At the owner's scale (10²–10³ nodes) none of this is critical.
+
+### 2.6 Retrieval
+
+**P8 (T) No retrieval beyond exact ids and substring filters.** [A][R1][R2]
+No error-ledger `query`; no cross-ledger search or reverse-reference lookup;
+`duplicates` is a normalized-summary heuristic; the node view reads 74 rows
+to return three. Workarounds exist (`rg`, `jq`, the HTML filter); semantic
+similarity is out of scope.
+
+**P27 (T) Task labels stand in for approach identity.** [G-D] `crash-triage`
+groups by `task_id`: three independent nodes sharing a label escalate; three
+failures of one node under renamed labels each return `fix_and_retry`; there
+is no stable attempt id or explicit pivot event.
+
+### 2.7 Mission memory
+
+**P7 (D/S) Mission memory duplicates the ledgers and is not durable.**
+[A][R1][G-K][R2] Notes are written into gitignored `progress/`; consumers
+inherit the ignore; the template's "history in git" does not exist.
+
+**P28 (S) Pruning destroys generated blocks and never-committed text.** [G-K][R2]
+`observer.ts:51` cuts whole lines before `main.ts:249` commits: a tracked
+23,568-byte note became 9,979 bytes with the generated block's END marker cut
+and a new through-line absent from every git revision, while the footer still
+claims full text is in history; `runObserver` never refreshes the
+accepted-results block.
+
+**P29 (S) The journal and digest cannot reconstruct a mission.** [R2] A restart
+resets wave numbering and gate state; `waveHistory` maps by wave only, so two
+"wave 1" records collapse; the digest points at a journal path that does not
+exist, is gated on `windowsUsed` that CLI workers hardcode to 1, is emitted
+before the integrity check, and is not finalized on halt.
+
+### 2.8 Agent knowledge
+
+**P6 (D) Prose exceeds the code it describes; facts have several editable owners.**
+[A][R1][G-K][R2] Authored prose 368 KB against 315 KB of owners [G-K];
+`CHANDRA_ROLE` is stated in 19–30 files depending on the counting rule, the
+ledger layout in 12, the packet contract in 9, the role policy in 19. Of the
+29 drift obligations, 4 are wholly and 3 partly enum/path facts a generator
+could render; 22 describe behavior [R2] — so generation fixes a minority and
+behavior tests the rest. The manifest itself hand-declares the cap and
+filenames (`contract.py:25,71`); the observer declares `10240` again.
+`INDEX.md` claims to win disputes while `AGENTS.md` names the same file as
+the authority by an unqualified name [G-K].
+
+**P10 (T) Context cost is unbudgeted.** [A][G-K][R2] Session start injects
+6,733 bytes (18,335 with the briefing); the 33 skill descriptions cost 11,601
+bytes in the briefing; a median skill is 7.7 KB; the three real work skills
+cost 27,998 bytes; a one-node worker with its required reads costs 22.7 KB
+(SDK) / 35.2 KB (CLI) and 50.7 / 63.2 KB after loading those three skills;
+Verify sections are 17 % of skill bytes [G-K]. R2 corrects "the only budget":
+turn and time limits exist; what is missing is accounting for the assembled
+context.
+
+**P30 (C for the harvest gate) The skill registry's own gate has holes.**
+[G-K][R2][A] `verify_block` runs only the first fenced block — a second block
+that exits 1 passes; seven shipped skills' Verify blocks read the installed
+`.claude/skills/<name>/SKILL.md` rather than `$CLAUDE_SKILL_DIR`, so
+promotion certifies the old text, not the candidate (a candidate whose
+example uses an impossible status passed); a draft with no Verify block is
+promoted; `new` scaffolds straight into the registry and `list_skills`
+discovers any directory, so unadmitted drafts load as if admitted; unknown
+frontmatter keys only warn, so a `facts` block would not be checked; nested
+`metadata` is flattened by the parser; a copy failure mid-harvest leaves a
+partial install that the next `notes(wave)` commit stages anyway, and a
+promotion in the halting wave stays outside HEAD; harvested skills land in a
+`notes(wave)` commit rather than the required `infra(skills)` commit. Also
+`dag_mermaid._safe` maps `P::a-b` and `P::a_b` to one identifier [R2].
 
 **P9 (D) Two runtimes re-implement behavior the manifest does not carry.**
-`loop_gate.py:165-168` counts results with empty `open_obligations`;
-`gate.ts:39` counts `discharged` obligations. `loop_gate.py` is a leftover of
-the retired ralph-loop driver, wired to no hook (`.claude/settings.json`), yet
-shipped, wrapped, skilled, and tested.
+[A][R1][R2] `loop_gate.py` counts discharged results, `gate.ts` counts
+discharged obligations; the Python gate is unwired but shipped and skilled.
 
-**P10 (T) Context economics are invisible.** Session start injects 6.7 KB
-(18.3 KB with the skills briefing); Claude Code loads 9.2 KB of skill
-descriptions every session; a worker prompt is 2.4 KB pointing at a 20.7 KB
-read set; no worker prompt reads the research-state note. The only budget in
-the system is the 10 KB cap on a prose note no worker reads.
+## 3. What an optimal design must satisfy (amended)
 
-## 3. What an optimal design must satisfy
+- G0 A transaction contract, not just a lock: verification runs against immutable inputs outside the critical section; a short commit section (repository lock or ordered dependency locks) re-validates the read set and versions, allocates sequences, deduplicates by request identity, appends and fsyncs; readers see only committed, whole rows; waves observe coherent before/after epochs.
+- G1 Entities have immutable kind and identity; revisions are explicit (`supersedes` to a row hash); aliases and retirement are typed edges with dependent handling; `paper` is ownership, not partition; dependency and supersession relations are acyclic at write time; settlement checks evidence-class compatibility and *current* validity of the referent; support changes are either propagated or reported to a consumer that blocks use.
+- G2 The append-only, hash-chained JSONL stays canonical and git-tracked; everything else is derived and rebuildable; a trusted checkpoint (previous commit + ledger inventory + digests of unhashed prefixes) is verified before scheduling, completion, or checkpoint replacement.
+- G3 Linear scans replaced by indexed maps where quadratic; bounded, paginated transport; one coherent snapshot per epoch with a measured call budget.
+- G4 Evidence authority: gate-owned fields are rejected on input; verifiers are registered per task and executed as immutable definitions; candidate identity, reviewer verdict, execution, and admitted bytes are bound together; outputs retained whole under an aggregate budget with overflow rules; packs are contained by realpath and re-checked between phases.
+- G5 Retrieval: cross-ledger search and reverse references; stable attempt ids; skills located by typed moment (stage × role × event) with an executable loader.
+- G6 One owner per fact, with a scope and an enforcement label (implemented / intended / rationale); generated reference blocks are drift-tested; behavior is kept true by behavior tests, never by generated prose that would bless a bug as policy.
+- G7 Mission memory = ledgers (research) + durable operational events with run identity + a hand-written through-line; prior bytes are preserved before any prune; generated blocks are replaced whole.
+- G8 Every delivered context carries a receipt: source commit, selected skill revisions, bytes, ledger watermark; mandatory closure fails or splits explicitly instead of truncating.
+- G9 Skill admission binds checks to candidate bytes, requires a Verify block, publishes skill + index atomically, keeps drafts undiscoverable until admitted, and lands in its own commit.
 
-- G0 Single-writer discipline: one append at a time per ledger file, held across tail-read → gate → write; sequence numbers assigned under the same lock.
-- G1 One graph: typed entities and edges, global ids, `paper` an attribute; referential integrity, acyclicity, supersession, retirement, and obligation-aware readiness enforced at write time; dependents re-checked or reported when their support changes.
-- G2 The append-only, hash-chained JSONL stays canonical and git-tracked; everything else (index, views, notes, CSV, Mermaid, dashboard, generated doc tables) is derived and rebuildable.
-- G3 Indexed reads when the scale demands it; one query call per wave, not fourteen; cross-paper by default.
-- G4 Evidence chosen by the verifier, not only the proposer: gate-owned fields (`evidence_sha256`, `verification_run`) are stripped from input; verification commands are registered per task, not free-typed on the row; outputs kept whole under a size cap.
-- G5 Retrieval: full-text search over statements, summaries, root causes, and fix hypotheses; skills located by moment (stage × role).
-- G6 One source of truth per fact where a fact is data; behavior kept true by behavior tests, not by prose.
-- G7 Mission memory = queries over the graph plus a tiny hand-written through-line; generated notes tracked in git.
-- G8 Explicit context budgets for session start and worker packs, in bytes, assembled by a tool.
-- G9 Chain heads anchored per wave commit so truncation is detectable; provenance carries role and session.
-
-Non-negotiables that stay: the verifier admits; executable admission at write; ledgers canonical over prose; delegation policy; the commit gate; Python ≥ 3.10 with no third-party dependencies; Node 18.
+Non-negotiables that stay: the verifier admits; executable admission at write;
+ledgers canonical over prose; delegation policy; the commit gate; Python
+≥ 3.10 with no third-party dependencies; Node 18.
 
 ## 4. Candidate architectures
 
-### A — Harden the JSONL ledgers in place (recommended now)
+### A — Harden the four JSONL ledgers in place
 
-Per-ledger advisory lock (`fcntl.flock` on `<db_dir>/.lock`) held across
-tail-read → gate → append, with `node_seq` assigned inside it; a `supersedes`
-field (row_hash of the replaced row) on all four ledgers, with a per-ledger
-definition of "same id, different content" that rejects unlinked replacement
-while leaving promotions (same id, new status) as they are; a `retired`
-status excluded from frontier and completion; `node_ids` / `node_id` /
-claim `dependencies` checked at append; cycles rejected at append; a
-`verify-integrity` CLI reporting dangling references, cycles, orphans, and
-dependents whose support was demoted or refuted (P12 as a report first, a
-gate later); gate-owned fields stripped from input and verification commands
-registered per `task_id`; `readyFrontier` honoring open obligations and built
-from every paper's rows, with `missionComplete` and `gateSignal` scoped to the
-mission paper; `Ledgers.claims()` failing loudly; `summary.csv` untracked and
-rebuilt on demand; the runtime's 14 per-wave CLI calls consolidated into one
-`snapshot` query; chain heads recorded per wave commit; an error-ledger
-`query`; all enums and paths in one `_common/schema.py`.
+Keep the four streams and their CLIs. Add: a global writer lock with the G0
+protocol and a committed multi-stream receipt (heads + counts + legacy-prefix
+digests) written by the wave commit; typed entity / revision identity with
+`supersedes`, alias, and `retired`, and a per-ledger semantic comparison
+(assumptions, evidence, scope, kind included) that rejects unlinked
+replacement while allowing promotions; request identity for batches and
+validation before dedup; typed reference resolution (`node_ids`, `node_id`,
+`dependencies`, `source_ids`) and acyclicity for dependency and supersession
+at append; settlement compatibility (evidence class, current validity) and a
+support-change reducer that reports — later gates — stale dependents;
+gate-owned fields rejected, verifiers registered per task, evidence retained
+under an aggregate budget; readers that fail closed and a chain/checkpoint
+check before any decision or terminal exit; `readyFrontier` built from all
+papers with ownership preserved, prerequisite blockers separated from repair
+work and from closure, and repair jobs runnable; `summary.csv` untracked; a
+coherent `snapshot` query with before/after epochs; an error-ledger `query`;
+one `_common/schema.py`; a latest-row map for traversal.
 
-Fixes P11, P2, P12 (report), P13, P14, P3, P1, P16, P15, P5 (heads), P9
-(partly), and the 57% + 0.6 s/wave halves of P4. Leaves P8 to grep. Effort
-~12 nodes, each small; every skill keeps its CLI surface (12 skill bodies
-need wording updates for `amended`/`summary.csv`/`retired`).
+Fixes P11, P17 (within one repository lock), P18, P2, P16, P14, P20, P12
+(report first), P21, P1, P3, P22, P23, P5, P24, P15, P13, P25, P26, most of
+P4. Effort: R1 estimated days for stage 0; G-D estimates 15–24 person-days
+for its fuller A; the two agree that A is the prerequisite for anything else.
+Every skill keeps its CLI surface; twelve operational skills need their
+executable fixtures changed, not merely reworded (they currently assert
+automatic CSV creation, admit an orphan trial, replace predecessors without
+lineage, and submit free verifier commands) [R2].
 
-### B — Event log + derived index (later, threshold-gated)
+### B — Canonical accepted-transaction log + rebuildable SQLite projection
 
-Keep the JSONL files as the canonical event log. Add a derived, gitignored,
-rebuildable index `results/ledgers/index.sqlite` (stdlib `sqlite3`; FTS5 is
-present on this host, 3.45.1) with `events`, `entities`, `edges`, and an FTS
-table; edges derived from row fields plus `supersedes`; queries `search`,
-`similar-trials`, `lineage`, `frontier`. Readers move to the index; the gate
-resolves references there. Because the index must never be a second truth,
-it is built and read only under the same per-ledger locks as the writers
-(A's `flock`), rebuilt when its recorded heads differ from the files', and
-the gate keeps the file path as the arbiter when the index is absent or
-stale. Consumers must ignore the index file or the wave commit will stage it.
+G-D's version, stronger than the first draft's "index": the four streams are
+sealed as immutable archives with genesis manifests; new writes are one-line,
+hash-chained transaction envelopes (idempotency key, expected input versions,
+actor role, evidence references, generated observations) that can carry
+several logical events atomically; SQLite (stdlib; FTS5 present on this host,
+must be feature-checked on consumers) is a derived projection of entities,
+versions, events, typed edges, evidence, runs, effective validity, and FTS,
+storing the last applied sequence and hash; reads pin a head; the gate resolves
+references through the projection but the log is the only commit. Adds what A
+cannot: atomic multi-ledger flushes, pinned reads, exact replay, effective
+validity as a first-class query. Effort 27–44 person-days [G-D]. Risks: crash
+recovery, index freshness under parallel writers (the projection must be
+built and read under the same lock discipline), consumer `.gitignore`, branch
+divergence, two implementations of admission rules unless validators share
+adapters.
 
-B pays off when a paper's ledgers exceed ~10⁵ rows, when a wave's ledger I/O
-exceeds 5% of its wall-clock, or when a retrieval need beyond grep is
-demonstrated. Below that it adds a second implementation of every admission
-rule, schema migrations whenever row fields change, an exact-match index
-beside FTS (the default tokenizer splits `_shared::base` and `eq:D.k`), and
-rebuild storms under parallel workers. Effort ~8 nodes, several multi-day.
+### C — Universal typed graph store
 
-### C — One typed store replacing the four files
-
-A single `events.jsonl` plus the same derived index; per-paper directories
-removed. Cleanest model, but re-anchors every chain, changes every skill's
-paths and the TypeScript bridge, and forces a consumer migration. Defer until
-B has run a real mission.
+Nine node kinds and six edge kinds as the public authoring contract; the
+backend may still be B's log + projection. 37–59 person-days [G-D]; every
+producer contract changes. Justified only if consumers need independently
+evolving, queryable historical rule sets or cross-mission procedure reuse
+[G-K]; not established by any measurement.
 
 ### K — The agent-knowledge layer (independent of A/B/C)
 
-- K1 `_common/schema.py` as the single source for enums, paths, caps, cadences, role policy; `contract.py manifest` reads it; `render-docs` writes the generated tables in `INDEX.md`, the specs, and `AGENTS.md` between markers, drift-tested like `render-state`. Scope honestly: this fixes the ~5/29 enum-and-path drift; behavior drift needs behavior tests (K5).
-- K2 Skills carry a checked `## Facts` block (`symbol == value` assertions the registry imports and compares) and `metadata.moments` (stage × role); a stale fact fails `validate`.
-- K3 A pack assembler: `skill_registry.py pack --stage work --role worker --budget 24k` selects skills by moment, adds the node's context from `query` output (no index needed), and stops at the byte budget; `agents.ts` and validator packs use it. Session-start injection gets a budget.
-- K4 Notes: the two snapshot notes are generated and tracked; the research-state note keeps a hand-written through-line (≤ 2 KB) plus generated blocks; `progress/<mission>/` leaves `.gitignore` (verified by a consumer-shaped fixture that has the ignore).
-- K5 Behavior drift tests: the 14 prose-behavior drift findings each become a test that reads the spec sentence's claim against the code (readiness, cadence, validator wiring), so the spec is either true or the test fails.
+G-K's staged design, adopted over the first draft's K1–K4:
+
+- K-A **Ownership and generated references.** A catalog assigning each fact one owner, a scope, and an enforcement label; source adapters deriving domains, statuses, layouts, schemas, CLI inventories, and the commit grammar from the code that owns them; a behavior contract of executable cases (readiness with obligations, partial batch admission, strict roles, pre-prune persistence, paper-vs-digest cadence) that classifies intended-but-unimplemented rules visibly; rendered reference blocks in `INDEX.md`, the specs, the contracts, and `AGENTS.md` with markers and drift tests. Scope honestly: this covers the enum/path minority of the drift; behavior drift needs the behavior contract's tests.
+- K-B **Skills as the procedural unit.** Skills carry checked `facts` records (fact, source symbol, expected value = a generated, reviewed pin) in a typed encoding the parser preserves; the registry verifies the *candidate's* bytes, requires exactly one Verify block, keeps drafts outside discovery, records an admission receipt (hashes of candidate, facts, verification inputs), publishes skill + index atomically, and lands in an `infra(skills)` commit. A deterministic loader maps (stage, role, event) to a small skill set, preserves opt-in skills, and assembles worker, job, and validator packs with a byte budget that fails or splits explicitly and records a receipt. Pilot on the three work skills (target ≤ 4 KB bodies each, down from 28 KB combined; Verify code moved to support files) before migrating all 33 [G-K]. Only 12 of 154 assertion sites in current Verify blocks are equality-to-constant facts (5 of 33 skills) — facts blocks complement, they do not replace, behavior assertions [R2].
+- K-C **Mission memory.** One structured, watermarked snapshot feeds the iteration note, nodal note, digest, and generated state sections; the hand-written through-line lives in a preserved narrative source; prior bytes are archived before any prune; generated blocks are replaced whole; run and wave identities are durable; the digest reports integrity status and finalizes on halt; selected notes are tracked, control and scratch files are not.
+- K-D **Retrieval.** A disposable local index over facts, procedures, and trial references answering the three lookup questions with source references, and "unknown / not recorded" for missing joins; harvest flags overlapping procedures and invalidates dependents when their source symbols change.
 
 ## 5. Recommendation
 
-**A + K now, in three stages; B only when its thresholds are met.**
+**A + K now, in stages that each leave the repo runnable; B when its
+semantic or scale triggers are met, decided by measurement after A.**
 
-- Stage 0 — correctness, days: the ledger lock (P11), the cross-paper +
-  obligation-aware frontier with scoped completion (P1, P3), loud claim-ledger
-  failures (P15). These fix defects a real parallel mission hits in its first
-  waves.
-- Stage 1 — the rest of A: `supersedes` + `retired`, integrity at append and
-  `verify-integrity`, evidence hardening, chain heads, CSV untracked, call
-  consolidation, single-source schema, error `query`.
-- Stage 2 — K: rendered doc tables, skill facts and moments, the pack
-  assembler, tracked notes, behavior drift tests.
-- Stage 3 — B, when a mission's ledgers pass ~10⁵ rows or ledger I/O passes 5%
-  of wave time or retrieval beyond grep is demonstrated necessary.
+- Stage 0 — emergency correctness (days, the six blocking obligations): the
+  writer lock with G0's protocol for a single repository lock, readers that
+  fail closed (P15) and a chain/checkpoint check before scheduling and exits
+  (P24), the validator bound to its reviewed submission with contained packs
+  (P26), the registry binding checks to candidate bytes and refusing drafts
+  without a Verify block (P30), and the cross-paper / ownership / repair-aware
+  frontier (P1, P3, P23) — with identity rules and reject → repair →
+  discharge → admit fixed before global import.
+- Stage 1 — semantic hardening (the rest of A): entity/revision model with
+  `supersedes`, alias, `retired`; request identity and validation-before-dedup;
+  typed references and acyclicity; settlement compatibility and the
+  support-change reducer; gate-owned evidence, registered verifiers,
+  retention with an aggregate budget; checkpoint manifests with legacy-prefix
+  digests; `summary.csv` untracked; coherent snapshot with epochs; error
+  `query`; `_common/schema.py`.
+- Stage 2 — K-A through K-D, starting with the ownership catalog and the
+  behavior contract, then the three-skill pilot, then the loader and packs,
+  then memory and retrieval.
+- Stage 3 — B, when a mission needs atomic multi-ledger flushes or pinned
+  reads that A's single lock cannot give, or when post-A measurements show
+  ledger I/O on the wave's critical path, or when a retrieval workload
+  exceeds grep. The first draft's 10⁵ rows / 5 % thresholds are provisional
+  policy, not measured crossovers [R2].
 
-Do not change: the JSONL event log and its chains, the executable admission
-rule, the rendered-view rule, the delegation policy, the commit gate, the
-stdlib-only constraint, the skills' CLI surfaces (only add subcommands).
+Where the reviewers disagree: G-D holds that B is justified on correctness
+grounds regardless of scale (atomicity, replay, effective validity); R1 and R2
+hold that A's transaction contract delivers those within one repository and
+that B should follow measurement. This note sides with measurement after A,
+and keeps B's design (not just its index) as the target if A's single lock
+proves insufficient.
 
-Expected outcome after stages 0–2: parallel missions stop corrupting their own
-memory; shared derivations work; a demoted support or refuted result is
-reported instead of silently standing; drift in enums, paths, and stated
-behavior becomes a failing test; appends cost about half; each wave makes one
-ledger call instead of fourteen.
+Do not change: the JSONL log and its chains, the executable admission rule,
+the rendered-view rule, the delegation policy, the commit gate, the
+stdlib-only constraint, the skills' CLI surfaces, the small always-on kernel,
+the markers discipline, immutable source mirrors, large data outside git.
 
 ## 6. Migration DAG
 
-| node | stage | summary | predecessors | verifier (exit 0 iff done) |
-|---|---|---|---|---|
-| `kb::ledger-lock` | 0 | `flock` per ledger dir across tail-read → gate → append; `node_seq` under the lock; `chain_append` fsyncs | — | new `tests/test_ledger_lock.py`: 4 processes × 25 appends → `verify_all_chains` ok, 100 rows, `node_seq` 1..100, in 5/5 runs |
-| `kb::frontier-crosspaper-obligations` | 0 | `buildMission` from all papers; `readyFrontier` excludes nodes with open obligations; `missionComplete` and `gateSignal` scoped to the mission paper | — | `cd orchestrator && npm test` with fixtures: `P::top` on solid `_shared::base` ready; a node with an open obligation not ready; `_shared` `future` node does not block P's completion |
-| `kb::claims-fail-loud` | 0 | `Ledgers.claims()` throws on CLI failure; the wave halts with the CLI's stderr | — | `npm test`: a malformed claims line halts the wave with a `ledger_unreadable` reason instead of an empty frontier |
-| `kb::schema-single-source` | 1 | `_common/schema.py` owns enums, paths, caps, cadences, roles; modules import it; manifest reads it | — | new `tests/test_schema.py`: AST scan proves each enum is defined in exactly one module; manifest equals schema |
-| `kb::supersedes-retire` | 1 | `supersedes` on all ledgers; `retired` status; per-ledger "different content" rule (result: claim or evidence_type; claim: statement; knowledge: summary or predecessors) rejects unlinked replacement, allows promotions; frontier and completion exclude `retired` | lock | new `tests/test_supersedes.py`: accept promotion, reject unlinked replacement, redirect via `supersedes`, retired node absent from frontier |
-| `kb::integrity` | 1 | `node_ids` / `node_id` / claim `dependencies` must resolve at append; cycles rejected; `contract.py verify-integrity` reports dangling refs, cycles, orphans, and dependents whose support was demoted / refuted | supersedes-retire | new `tests/test_integrity.py` reproducing §9 demonstrations 2–4 and the demotion / refutation cases as rejections or reports |
-| `kb::evidence-hardening` | 1 | gate strips caller-supplied `evidence_sha256` / `verification_run`; verification commands registered in the task file and cited by name; output stored whole under `results/evidence/<sha256>` with a 256 KB cap | integrity | `tests/test_admission.py` + new cases: prefilled hash rejected; unregistered command rejected; output file hashed and cited |
-| `kb::chain-heads` | 1 | `results/ledgers/CHAIN_HEADS.json` written by the wave commit step (single writer), verified by `verify-chains`; tail truncation since the last commit detected | lock | `tests/test_hash_chain.py::test_tail_truncation_detected` + `npm test` (heads written per wave) |
-| `kb::csv-untracked-consolidated` | 1 | `summary.csv` untracked and rebuilt on demand; one `snapshot` CLI returning knowledge + results + claims for a paper; `ledger.ts` makes one call per wave | schema | `git ls-files | grep -c summary.csv` = 0; `npm test`; a test counting subprocess launches per wave ≤ 2 |
-| `kb::error-query` | 1 | `error_database.py query` with `--node-id / --task-id / --failure-mode / --since`; `crash-triage` uses it | schema | `tests/test_error_ledger.py` new cases |
-| `kb::docs-rendered` | 2 | `render-docs` fills marked blocks in INDEX / specs / AGENTS from the schema; drift test renders and diffs | schema | new `tests/test_docs_rendered.py` |
-| `kb::behavior-drift-tests` | 2 | one test per prose-behavior drift obligation (readiness, cadence, validator wiring, steer reach, dry-run) | frontier-crosspaper-obligations | `python3 -m pytest tests/test_spec_behavior.py -q` + `npm test`; each obligation discharged by a test id |
-| `kb::skills-facts-moments-pack` | 2 | registry checks `## Facts`; `metadata.moments`; `pack` with byte budget; `agents.ts` and validator packs use it | docs-rendered | `python3 _common/skill_registry.py validate --exec` (facts checked) + `npm test` |
-| `kb::notes-tracked` | 2 | snapshot notes generated and tracked; research-state = through-line ≤ 2 KB + generated blocks; `progress/<mission>/` un-ignored | csv-untracked-consolidated | `npm test` with a consumer-shaped fixture carrying the repo's `.gitignore`: the wave commit contains the notes |
-| `kb::sqlite-index` | 3 | index + FTS + `search` / `similar-trials` / `lineage`; built and read under the ledger locks; rebuilt on head mismatch; gate reads it only when fresh | lock, chain-heads, integrity | new `tests/test_index.py` incl. a concurrent writer + reader case; `tests/test_admission.py` run with and without an index |
+Verifier cells name the discriminating cases each test must contain (per the
+R2 audit of the previous verifiers); a positive fixture alone does not decide
+a node. Dependencies follow R2: identity and repair semantics precede global
+leasing; schema precedes changed status contracts; registration and
+immutable snapshots precede evidence hardening; preservation precedes
+tracked notes.
 
-Stage 0 = 3 nodes, stage 1 = 7, stage 2 = 4, stage 3 = 1 (+ follow-ups). Each
-is one commit; each can be delegated with the verifier as its contract.
+| node | stage | summary | predecessors | verifier must discriminate |
+|---|---|---|---|---|
+| `kb::ledger-transaction` | 0 | repository lock; verify outside, commit inside; sequences and dedup under the lock; fsync; readers fail closed on partial rows | — | 4 writers × 4 ledgers × 5 runs valid; interrupted write invisible to readers; dependency demoted under a second lock is caught by re-validation; verifier subprocess cannot deadlock on the lock |
+| `kb::integrity-before-decisions` | 0 | chain + checkpoint verified before scheduling, completion, halt, digest; `Ledgers.*` throw with stderr/stdout; bridge overflow is an error | — | tampered all-solid ledger, torn claims file, 17 MB claims ledger, missing CLI each halt with the diagnostic; empty ledger still schedules |
+| `kb::validator-binding` | 0 | candidate deep-copied and hashed; paper/node/claim/revision bound to `CLAIM.md`; realpath containment; re-check between phases; non-empty reasons; verdict inputs retained | — | other-paper row, opposite claim, judge-time mutation, `../` evidence path all rejected; retained review reproduces the verdict |
+| `kb::registry-candidate-binding` | 0 | Verify runs against candidate bytes; exactly one block required; drafts default outside discovery; admission receipt; installed-self references rejected | — | the seven shipped self-reference skills fail until fixed; impossible-status draft rejected; two-block draft rejected; no-Verify draft rejected; scaffold not listed until promoted |
+| `kb::identity-revisions` | 1 | immutable kind + id; `supersedes` (row hash); alias; `retired`; per-ledger semantic comparison; promotion/demotion matrix; trial request identity | ledger-transaction | every ledger's transition matrix incl. legacy `amended`; the 14 real promotions replay unchanged; unlinked replacement rejected; retired node absent from frontier and completion, dependents reported |
+| `kb::frontier-ownership-repair` | 0/1 | mission from all papers with ownership preserved; blockers vs repair work vs closure; paper-level obligations; repair jobs runnable; interiors use the same eligibility; scoped completion and progress | identity-revisions | `P::top` on solid `_shared::base` ready; reject → repair → discharge → admit through the production entry point; nonblocking obligations do not block; empty-`node_ids` blocker visible; foreign leasing rejected; `_shared` future node does not block P |
+| `kb::schema-single-source` | 1 | `_common/schema.py` owns enums, paths, caps, cadences, roles, filenames; manifest and TS consumers derive | — | mutate each source value → manifest, runtime constants, and rendered consumers change together; AST proves one definition site |
+| `kb::typed-refs-acyclic` | 1 | `node_ids` / `node_id` / `dependencies` / `source_ids` resolve by type and revision; dependency and supersession cycles rejected; citations may cycle | identity-revisions | self-loop, cross-paper cycle, orphan trial, forward reference in a batch each rejected; citation cycle admitted |
+| `kb::settlement-validity` | 1 | evidence-class compatibility; referent current and valid; bypass flags consumed by frontier and completion; support-change reducer reports stale dependents (gate later) | typed-refs-acyclic | exact_proof on conjectural rejected; discharge by refuted rejected; demotion produces a report the frontier honors; every bypass-flagged row visibly excluded from closure |
+| `kb::verifier-registration` | 1 | verifiers registered per task file, immutable definitions; gate-owned fields rejected on input; execution bound to candidate identity | schema-single-source | prefilled hash / `null` hash / free command rejected; registered verifier's exact bytes recorded; timeout and overflow handled |
+| `kb::evidence-retention` | 1 | outputs stored whole under `results/evidence/`; aggregate budget; overflow → external retention with digest + availability; re-check on read | verifier-registration | modified and deleted artifacts surface as unavailable; budget exceeded refuses; replay reproduces |
+| `kb::checkpoint-manifest` | 1 | wave commit writes heads, counts, ledger inventory, legacy-prefix digests; verified against the previous commit before replacement | ledger-transaction | tail deletion, whole-ledger deletion, legacy-prefix edit, concurrent head capture, failed commit each detected |
+| `kb::snapshot-epochs` | 1 | one coherent snapshot CLI; before-work and after-all-jobs epochs; `summary.csv` untracked, rebuilt on demand; traversal via a latest-row map | ledger-transaction | progress attributed only to events under the task; concurrent job settlement not credited to a packet; measured call counts on packet / acquire / digest / terminal paths; no tracked CSV; 10,000-row transitive walk linear |
+| `kb::error-query-attempts` | 1 | error `query` with filters; stable attempt ids and explicit pivot events; `crash-triage` consumes them | snapshot-epochs | renamed-task and shared-label cases decided correctly; boundary timestamps; legacy rows |
+| `kb::ownership-catalog` | 2 | fact owners, scopes, enforcement labels; source adapters; behavior contract with intended-vs-implemented classification | schema-single-source | duplicate or missing owner rejected; each of the 29 drift obligations mapped to owner + label + test or explicit policy decision |
+| `kb::rendered-references` | 2 | marked generated blocks in INDEX / specs / contracts / AGENTS; idempotent; stale value or stale output fails | ownership-catalog | missing marker, incomplete render, hand edit inside a block each fail; rationale outside blocks preserved |
+| `kb::skill-facts-pilot` | 2 | typed `facts` and `moments`; the three work skills migrated ≤ 4 KB bodies, Verify code in support files | registry-candidate-binding, ownership-catalog | stale pin, type error, missing required fact rejected; essential steps covered by a named task fixture; opt-in skills untouched |
+| `kb::moment-loader-packs` | 2 | (stage, role, event) routes; pack assembler with receipts and byte accounting; `agents.ts` and validator packs use it | skill-facts-pilot, frontier-ownership-repair | coverage and conflict rejection; mandatory closure overflow fails explicitly; both runner paths equivalent; receipt lists revisions and bytes |
+| `kb::memory-preservation` | 2 | pre-prune archive; whole-block replacement; run/wave identity; truthful digest cadence, paths, finalization; selected notes tracked | snapshot-epochs, checkpoint-manifest | pruned never-committed text recoverable; generated block intact; restart keeps history; halt emits a final digest; consumer-shaped ignore fixture commits the notes |
+| `kb::skills-migration-retrieval` | 2 | remaining 30 skills migrated; harvest atomic with its own commit; dependents invalidated on symbol change; local retrieval index | moment-loader-packs, memory-preservation | partial-harvest and halt-before-commit cases; three lookup questions answered with sources; overlap flagged |
+| `kb::transaction-log-projection` | 3 | B: archives + genesis, envelopes, projection, pinned reads, parity, cutover | identity-revisions, checkpoint-manifest, settlement-validity | absent / stale / fresh parity under one admission rule set; concurrent writer + reader; crash and lock order; rebuild reproduces effective validity; adoption gate measured |
+
+Stage 0 = 4 nodes (+ the frontier node once identity lands), stage 1 = 9,
+stage 2 = 6, stage 3 = 1 umbrella (G-D's B1–B12 inside it). "Each node one
+commit" holds for stages 0–2; several stage-1 nodes are multi-day.
 
 ## 7. Risks
 
-- Advisory locks do not cover NFS or Windows; document the constraint, fail loudly when `flock` is unavailable.
-- `supersedes` semantics differ per ledger; the "different content" rule must be stated per ledger or promotions break.
-- Generated prose nobody can read: render only tables and reference sections; rationale stays hand-written.
-- Evidence store growth: the 256 KB cap and the no-large-datasets commit policy must agree; large artifacts stay outside the repo with hashes cited.
-- Skill bloat: the pack assembler's byte budget is the control.
-- Index divergence if B is adopted early: the lock-and-rebuild rule is necessary, and still leaves the gate depending on index freshness; keep the file path as the arbiter.
+- Lock semantics: advisory locks do not cover NFS or non-cooperating writers; blocking acquisition inside verifiers can deadlock — verify outside the critical section.
+- Supersession without a data model breaks promotions and idempotent batches; the per-ledger comparison must be complete (assumptions, evidence, scope, kind).
+- Obligation-aware readiness without runnable repair jobs deadlocks a mission.
+- Generated prose that blesses a bug as policy: the behavior contract must label intended vs implemented before any rendering.
+- Evidence retention vs the no-large-datasets policy: an aggregate budget and external retention with digests, not a per-file cap alone.
+- Skill bloat and rigid routing: the pilot's ≤ 4 KB bodies and explicit conditional additions are the controls.
+- B's index divergence: build and read under the same lock discipline; never a second commit path.
 
 ## 8. Open questions for the owner
 
-1. Is this the "knowledgebase" you meant — ledgers + DAG + notes + docs/skills together — or specifically the knowledge ledger and its DAG?
-2. Stage 0 changes runtime semantics (obligations block readiness; completion scoped per paper). Acceptable, or should obligations only warn?
-3. Should demotion / refutation of support demote dependents automatically (a gate) or only be reported by `verify-integrity` first?
-4. Track mission notes in git (un-ignore `progress/<mission>/`) or keep them ephemeral?
-5. Retrieval: is grep + an error `query` enough until B, or is semantic similarity wanted now (external dependency)?
-6. Retire the Python `loop_gate.py` (unwired since the ralph-loop driver was removed) in stage 1?
+1. Is this the "knowledgebase" you meant, or specifically the knowledge ledger and its DAG?
+2. Stage 0 changes runtime semantics: which obligations block readiness (prerequisites) vs create repair work vs block closure? Should `blocking: false` ever block?
+3. Should support demotion / refutation demote dependents automatically (a gate) or be reported first?
+4. Who authors verifiers: registered per task file by the decomposer, or proposed by the worker and approved by the validator?
+5. Track mission notes in git (un-ignore `progress/<mission>/`) or move them to a durable home?
+6. Evidence retention: aggregate budget in git, and what external store for overflow?
+7. B trigger: correctness-driven (G-D) or measured after A (R1/R2)?
+8. Retire the unwired Python `loop_gate.py` now, or keep it as a compatibility CLI?
+9. Should the validator be wired into the mission loop (production contract), given that today no admitted result in a real mission passes through it?
 
-## 9. Evidence appendix (measured 2026-09-09; scripts in `notes/kb_redesign/`)
+## 9. Evidence appendix
 
-Scaling (`scale.py`, author; reviewer's independent rerun in parentheses; ms):
+Fresh-repo scaling (each N a separate throwaway repo; [R2] independent
+measurement; ms; the first draft's table came from a cumulative fixture whose
+labels 100/500/2000 meant 100/601/2602 rows — corrected here, script fixed):
 
-| N | knowledge append | query | predecessors --transitive | trial append | nodes.jsonl |
-|---|---|---|---|---|---|
-| 100 | 4.4 (5.6) | 0.5 (0.5) | 1.4 (1.3) | 4.7 (5.3) | 39 KB |
-| 500 | 15.0 (14.8) | 2.4 (2.1) | 26.0 (22.8) | 16.1 (16.2) | 232 KB |
-| 2000 | 48.6 (52.8) | 9.1 (8.3) | 434.1 (325.4) | 59.6 (52.8) | 1009 KB |
-| 10000 | (234.5) | (46.1) | (7919.6) | (216.8) | (5074 KB) |
+| N | knowledge append | query | transitive predecessors | trial append |
+|---|---|---|---|---|
+| 100 | 6.2 | 0.4 | 1.1 | 5.2 |
+| 500 | 13.8 | 1.8 | 20.9 | 15.7 |
+| 2,000 | 40.1 | 7.0 | 315.4 | 50.9 |
+| 10,000 | 206.0 | 42.9 | 8,203.6 | 258.4 |
 
-`append_batch` of 200 knowledge rows on ~2,600: 9.9 s (12.7 s). Append profile
-at 2,006 rows: `regenerate_summary` 30.3 ms (57%), `read_entries` for
-`node_seq` 8.0, `find_knowledge_node` 8.1, chain-tail read 1.7, `git rev-parse`
-2.7. CLI `query` subprocess: 46 ms at N=100, 78 ms at 2,000, 193 ms at 10,000;
-interpreter start-up alone ≈ 45 ms; 14 CLI launches per wave.
+Author's rerun with the corrected `notes/kb_redesign/scale.py`: see §9.1.
+Append profile at ~2,000 rows: CSV regeneration 57 % [A] / 74 % [R2];
+bare interpreter start-up ≈ 21 ms, empty CLI query ≈ 56 ms, CLI query at
+10,000 rows ≈ 215 ms [R2]. G-D wide/chain fixtures at 5,000 rows: query 25 ms,
+DAG merge 73–78 ms, dashboard 235–260 ms, chain transitive 2,109 ms; real
+sequential admission of 5,000 rows 285.6 s; 5,000 rich rows = 23.1 MB query
+output > 16 MiB bridge cap.
 
-Concurrency (`concurrent.py`): 4 processes × 25 appends to one error ledger →
-chain broken 3/3 runs (author: `break_at` 5, 1, 18; reviewer: 1, 6, 2).
+Concurrency (`concurrent.py`): 4 × 25 appends → chain broken 3/3 for [A]
+(`break_at` 5, 1, 18), [R1] (1, 6, 2), [R2] (3, 4, 4; 72–81 distinct
+`node_seq`); external exclusive `flock` control → valid, 0.44 s [R2].
 
-Demonstrations (`gaps.py`): (1) `P::top` with solid predecessor `_shared::base`
-→ `readyFrontier` = `["P::solo"]`, `plan` agrees; (2) `r1` re-appended with
-the opposite claim → latest view shows the new claim, two history rows, no
-link, no warning; (3) last row deleted from `results.jsonl` → `verify-chains`
-`{"ok": true}`, deleting a middle row is caught; (4) trial with
-`node_id: P::does-not-exist` accepted → `progress` row with `status: null`.
-Reviewer's additional cases: demoted predecessor leaves dependent solid;
-refuted `result_ref` leaves claim admitted; caller-supplied `evidence_sha256`
-and free-text evidence + `verification: {command: "true"}` both admitted as
-solid; hypothesis cycle accepted and omitted from `plan`; malformed claims
-line → `Ledgers.claims()` returns `[]`; same `node_id` in two papers resolves
-by `paper_hint`.
+Demonstrations (`gaps.py`; held for [A], [R1], [R2]): cross-paper readiness;
+same-id replacement; tail deletion vs middle deletion; orphan trial anchor.
+Spot-checked by [A] from the GPT-6 memos: solid self-loop admitted; refuted
+result discharges a fresh obligation; append accepted on a broken chain.
 
-Prose vs code (bytes): contracts 30.7 K + specs/templates 57.2 K + notes
-57.7 K; skills 249 K; Python 282 K; TypeScript 91.7 K. Session-start injection
-6,733 (18,335 with `--with-skills`); 33 skill descriptions 9,240 chars; worker
-prompt 2.4 KB over a 20.7 KB read set. Files stating each fact: `CHANDRA_ROLE`
-30, `results/ledgers/` 19, 10 KB cap 13, 5-iteration cadence 7, domain enum 5.
+Context and prose [G-K]: authored prose 368,197 B in 51 files vs 315,216 B
+of owners; skills 237,277 B (64 % of prose); Verify sections 40,414 B (17 %);
+session start 6,733 B, with briefing 18,335 B; briefing alone 11,601 B; median
+skill 7,722 B; three work skills 27,998 B; one-node worker with required reads
+22,673 B (SDK) / 35,187 B (CLI); with the three skills 50,671 / 63,185 B;
+validator `ALWAYS_PACKED` 12,783 B. Registry census [R2]: 154 assertion
+sites in first Verify blocks — 12 equality-to-constant (5 skills), 66 runtime
+behavior, 56 source-text, 20 file/path.
+
 Host: SQLite 3.45.1 with FTS5 and JSON1; Python 3.12.3; Node 18.19.1.
+
+### 9.1 Author's fresh-repo rerun
+
+`python3 notes/kb_redesign/scale.py 100 500 2000 5000`, each N a fresh
+repo, chains verified after every run (ms):
+
+| N | knowledge append | query | transitive predecessors | trial append | nodes.jsonl |
+|---|---|---|---|---|---|
+| 100 | 4.5 | 0.5 | 1.3 | 4.8 | 39 KB |
+| 500 | 13.0 | 1.8 | 19.5 | 13.7 | 193 KB |
+| 2,000 | 36.8 | 6.6 | 330.8 | 46.0 | 777 KB |
+| 5,000 | 94.7 | 18.9 | 2,110.5 | 123.8 | 1,949 KB |
+
+Agrees with [R2] within 10 % and with [G-D]'s 2,109 ms chain traversal at
+5,000; the transitive walk is quadratic, appends and queries linear.
 
 ## 10. Refutation record
 
-Reviewer: an independent fresh-context session (Claude), 2026-09-09, read-only,
-throwaway repos under `/tmp/kb-refute/`. Verdict: ADMIT WITH AMENDMENTS.
-Reproduced: the scaling table (within ~30%), all four demonstrations.
-Confirmed: P2, P3, P5, P7, P9, P10. Downgraded: P1 (loud halt, workaround,
-TS-only fix), P4 (CSV and subprocess start-up dominate; index does not remove
-start-up), P8 (grep suffices today). Root cause corrected: P6 (generator
-explains ≤ 5/29 drift findings). Added: P11 locking (C), P12 downstream
-invalidation, P13 proposer-defined verifiability, P14 no retirement, P15
-swallowed claim failures, P16 non-global node identity. Recommendation
-changed from "B + K staged" to "A + K now; B threshold-gated"; the §3d claim
-that a rebuild-on-head-mismatch index can never become a second truth was
-withdrawn (it fails under parallel writers without locks). Nine DAG verifiers
-were rewritten because they could not decide their nodes; K no longer depends
-on the index. Pending: the cross-model GPT-6 refutation (`kb-gpt6-review`).
+**R1 — fresh-context Claude reviewer (read-only, `/tmp/kb-refute/`).** ADMIT
+WITH AMENDMENTS. Reproduced the scaling trend and all four demonstrations;
+found P11 (writer races), P12, P13, P14, P15, P16; downgraded P1, P4, P8;
+corrected P6's root cause; withdrew the first draft's "index rebuilt on head
+mismatch is never a second truth"; changed the recommendation from "B + K" to
+"A + locking + consolidation now, B threshold-gated". All eight amendments
+applied in version 2.
+
+**G-D — GPT-6 data-model analysis (independent, note unseen).** Twelve
+ranked problems, of which P17, P18, P19, P20, P21, P22, P24, P25, P27 were new
+to the note; recommends emergency A then staged B (accepted-transaction log +
+SQLite projection) on correctness grounds; 12-node B DAG, 27–44 person-days;
+C 37–59 days.
+
+**G-K — GPT-6 agent-knowledge analysis (independent, note unseen).** Measured
+ownership and context costs; found the registry's first-block and
+candidate-binding holes (P30) and the unadmitted-discovery path; classified
+the 29 drift obligations (9 copied literals, 8 over-claimed guarantees, 6
+divergent contracts, 6 imprecise CLI descriptions); recommends ownership +
+generated references, then skills as the procedural unit with fact pins,
+moment routing, packs, receipts; a knowledge graph not justified; 13-node
+K01–K13 DAG. Adopted as K-A … K-D.
+
+**R2 — GPT-6 refutation of version 2 (`notes/kb_redesign/reviews/gpt6-refutation.md`).**
+ADMIT WITH AMENDMENTS. Reproduced everything; found the scaling fixture
+mislabeled; confirmed P11; downgraded P1 (T), P2 (D/T standalone), P8, P10,
+P14; upgraded P3, P4, P5, P7, P12, P13, P15; added P23 (readiness deadlock),
+P26 (validator binding, pack containment, disposable provenance), P28, P29,
+the harvest / commit disagreement, no-Verify promotion, evidence-budget and
+consumer-migration gaps, Mermaid id collision; audited all fifteen verifiers
+as non-discriminating and re-ordered dependencies. Its twelve amendments are
+applied: §2 and §9 corrected, G0/G1/G2/G4/G7/G9 rewritten, §6 rebuilt with
+discriminators and corrected edges, B's triggers labeled provisional, K
+narrowed to what facts can check.
+
+**Disagreement retained.** G-D: B on correctness grounds; R1/R2: measure after
+A. Recorded in §5 and §8 Q7 for the owner.

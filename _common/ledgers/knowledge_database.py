@@ -93,7 +93,7 @@ else:
 
 # --- enum constants ---------------------------------------------------------
 
-DOMAINS = ("symbolic", "numerical", "proof")
+DOMAINS = ("symbolic", "numerical", "proof", "software")
 
 # Status values. `solid` / `preliminary` / `hypothesis` are EXIST states (●);
 # `blocking` / `future` are NOT-EXIST states (○) — placeholders for nodes
@@ -120,7 +120,7 @@ FIELD_DESCRIPTIONS: dict[str, tuple[str, str]] = {
     "node_id":           ("string",        "matches logic.md node id"),
     "task_id":           ("string",        "matches implementation.md §0"),
     "git_commit":        ("string",        "short SHA, auto-filled"),
-    "domain":            ("enum",          "symbolic / numerical / proof"),
+    "domain":            ("enum",          "symbolic / numerical / proof / software"),
     "status":            ("enum",          "hypothesis / preliminary / solid / blocking / future / amended"),
     "summary":           ("string",        "one-line description of the node"),
     # conditional-required on status=solid

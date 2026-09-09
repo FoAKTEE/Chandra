@@ -14,7 +14,7 @@ minting new nodes — the giant DAG is then the project-progress view.
 USAGE
     python _common/error_database.py schema                       # required/optional fields + enums
     python _common/error_database.py describe-fields              # one-line meaning per field
-    python _common/error_database.py describe-domain --domain D   # D in {symbolic,numerical,proof}
+    python _common/error_database.py describe-domain --domain D   # D in {symbolic,numerical,proof,software}
     python _common/error_database.py describe-tag --domain D --tag <tag>
     python _common/error_database.py list-tags --domain D
     echo '{...row JSON...}' | python _common/error_database.py append
@@ -80,7 +80,7 @@ else:
 
 # --- enum constants (the canonical taxonomy) ---------------------------------
 
-DOMAINS = ("symbolic", "numerical", "proof")
+DOMAINS = ("symbolic", "numerical", "proof", "software")
 STAGES = ("source_import", "decomposition", "implementation", "validation", "result_log", "writing", "escalation")
 CHANGE_TYPES = ("structural", "scalar", "refactor")
 PASS_FAIL = ("pass", "fail", "crash", "partial", "amended")
@@ -110,10 +110,22 @@ FAILURE_MODES_PROOF = (
     "assumption_creep", "proof_too_large",
     "uncategorized_proof",
 )
+# `software` — the methodology repo optimizing itself (a self-hosted mission):
+# infra changes, skills, orchestrator code. Verified by test suites, not by
+# residuals; the same append-only + self-correction discipline applies.
+FAILURE_MODES_SOFTWARE = (
+    "test_failure", "build_failure",
+    "type_check_failure", "regression",
+    "flaky_test", "dependency_drift",
+    "spec_drift", "schema_violation",
+    "gate_rejection", "timeout_or_oom",
+    "uncategorized_software",
+)
 FAILURE_MODES_BY_DOMAIN = {
     "symbolic": FAILURE_MODES_SYMBOLIC,
     "numerical": FAILURE_MODES_NUMERICAL,
     "proof": FAILURE_MODES_PROOF,
+    "software": FAILURE_MODES_SOFTWARE,
 }
 
 # --- per-domain reference (failure-mode meanings, metrics, meta, evidence) --
@@ -159,6 +171,19 @@ FAILURE_MODE_MEANINGS = {
         "proof_too_large": "The proof checks but is too large or slow for downstream use.",
         "uncategorized_proof": "First instance of a not-yet-classified proof failure; on second instance, run the Self-correction protocol.",
     },
+    "software": {
+        "test_failure": "A test fails deterministically after the change; the assertion names the broken invariant — read it verbatim before diagnosing.",
+        "build_failure": "Compilation, bundling, or import fails (tsc, py_compile, module import) before any test runs.",
+        "type_check_failure": "Static typing rejects the change (tsc --strict, mypy); the code may run but the declared contract is violated.",
+        "regression": "A previously passing test or behavior now fails; bisect to the commit — never widen a tolerance or delete the test.",
+        "flaky_test": "The same test passes and fails across reruns with no code change; suspect ordering, time, filesystem, or shared state — fix the determinism, do not retry until green.",
+        "dependency_drift": "A pinned or implicit dependency version (python, node, pytest, a package) changed the outcome; record the versions on the row.",
+        "spec_drift": "Code and its governing doc/spec/contract disagree (INDEX.md, a spec.md, a SKILL.md, the contract manifest); fix the source of truth and re-render the other.",
+        "schema_violation": "A ledger row, manifest, or SKILL.md failed schema/frontmatter validation; the validator quotes the allowed values — self-correct from its message.",
+        "gate_rejection": "The commit-msg gate, admission gate, or skill validator refused the artifact; the rejection names the rule — do not bypass with --no-verify or --skip-exec.",
+        "timeout_or_oom": "The suite, build, or worker exceeded its wall-time or memory budget before producing a verdict.",
+        "uncategorized_software": "First instance of a not-yet-classified software failure; on second instance, run the Self-correction protocol.",
+    },
 }
 
 METRIC_NAMES_BY_DOMAIN = {
@@ -182,12 +207,21 @@ METRIC_NAMES_BY_DOMAIN = {
         "proof_size": "compiled proof-object size; used to verify a simplification pass.",
         "build_seconds": "wall time for proof-checker build target; secondary metric for timeout failures.",
     },
+    "software": {
+        "tests_failed": "value = failing test count of the verification suite; threshold = 0.",
+        "tests_passed": "value = passing test count; threshold = the count before the change (no silent test deletion).",
+        "build_exit_code": "value = exit code of the build / type-check command; threshold = 0.",
+        "skills_invalid": "value = skills failing `skill_registry.py validate`; threshold = 0.",
+        "suite_seconds": "wall time of the verification suite; secondary metric for timeout failures.",
+        "diff_lines": "insertions + deletions of the change (git diff --shortstat); the simplification cost metric.",
+    },
 }
 
 RECOMMENDED_RUNTIME_METADATA = {
     "symbolic": ("wolfram_version", "kernel", "package_versions", "assumptions_global", "max_extra_rules"),
     "numerical": ("language", "compiler_or_interpreter", "key_libraries", "dtype", "device", "rng_seed"),
     "proof": ("proof_assistant_version", "build_tool_version", "library_rev", "toolchain", "assumptions_baseline", "build_target"),
+    "software": ("python_version", "node_version", "pytest_version", "typescript_version", "os", "base_commit"),
 }
 
 EVIDENCE_PATH_TEMPLATES = {
@@ -220,6 +254,16 @@ EVIDENCE_PATH_TEMPLATES = {
             ("minimized_reproducer.proof", "(if non-trivial) a minimized reproducer of the failure"),
         ),
     },
+    "software": {
+        "root": "${CHANDRA_RUNTIME}/paper_<mission>/debug/software/iter<N>/",
+        "files": (
+            ("test_output.log", "verbatim pytest / node --test output"),
+            ("build.log", "compiler / type-checker output, verbatim"),
+            ("diff.patch", "git diff of the trial (or the failing subset)"),
+            ("env.txt", "tool versions: python3 --version, node --version, pytest --version"),
+            ("minimized_repro.sh", "(if non-trivial) the smallest command that reproduces the failure"),
+        ),
+    },
 }
 
 REQUIRED_FIELDS = {
@@ -240,7 +284,7 @@ FIELD_DESCRIPTIONS: dict[str, tuple[str, str]] = {
     "iteration":          ("int",           "Ralph loop counter"),
     "git_commit":         ("string",        "short SHA, auto-filled"),
     "stage":              ("enum",          "source_import / decomposition / implementation / validation / result_log / writing / escalation"),
-    "domain":             ("enum",          "symbolic / numerical / proof"),
+    "domain":             ("enum",          "symbolic / numerical / proof / software"),
     "change_type":        ("enum",          "structural / scalar / refactor"),
     "change_summary":     ("string",        "one-line description of the change"),
     "metric":             ("object",        "{name, value, threshold, pass}"),

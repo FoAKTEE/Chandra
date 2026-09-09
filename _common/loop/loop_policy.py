@@ -17,7 +17,7 @@ USAGE
     python _common/loop_policy.py crash-triage          --paper P --task T [--domain D]
     python _common/loop_policy.py simplification-status --paper P --task T [--domain D] [--metric-name M]
     python _common/loop_policy.py check-pivot           --paper P --task T --change-type {structural,scalar,refactor} [--domain D]
-    python _common/loop_policy.py describe-domain       --domain {symbolic,numerical,proof}
+    python _common/loop_policy.py describe-domain       --domain {symbolic,numerical,proof,software}
     python _common/loop_policy.py paper-refresh         --paper P [--every N] [--since L]
 
 For the static AI-coding-session policy (risk tiers, workflow, KISS/DRY/AHA,
@@ -62,7 +62,7 @@ PIVOT_WINDOW = 3  # alignment.md §0: three cycles of the same idea auto-escalat
 
 PAPER_REFRESH_EVERY = 5  # iterations between living-paper regenerations (pipelines/3-write)
 
-DOMAINS = ("symbolic", "numerical", "proof")
+DOMAINS = ("symbolic", "numerical", "proof", "software")
 
 # --- per-domain reference (parallel to error_database.FAILURE_MODE_MEANINGS) ---
 
@@ -106,6 +106,20 @@ SIMPLIFICATION_RECIPES: dict[str, dict[str, Any]] = {
             "introducing new assumptions outside assumptions_baseline (assumption_creep)",
         ),
     },
+    "software": {
+        "cost_metric": "diff size — git diff --shortstat insertions vs the pre-refresh commit, plus lines per touched module",
+        "actions": (
+            "delete dead code paths, unused flags, and compatibility shims nothing imports",
+            "inline single-call-site helpers; extract only at the 3rd real call site (AHA)",
+            "collapse duplicated constants into their single source of truth (contract manifest, DOMAINS, enums)",
+            "preserve the full suite green: tests_failed=0 and tests_passed not below the pre-refresh count",
+        ),
+        "anti_patterns": (
+            "deleting or skipping a failing test to make the suite green",
+            "relaxing an assertion, tolerance, or validator rule instead of fixing the code",
+            "abstracting on the second occurrence — a wrong abstraction costs more than duplication",
+        ),
+    },
 }
 
 CRASH_PIVOT_HINTS: dict[str, str] = {
@@ -117,6 +131,9 @@ CRASH_PIVOT_HINTS: dict[str, str] = {
     "proof": ("switch proof strategy — induction to stronger induction, automated decision to manual lemma, "
               "classical to constructive, or single lemma to a mutually dependent block. "
               "Small rewrite-rule additions do not count as structural."),
+    "software": ("switch the approach, not the parameters — a different algorithm or data structure, a "
+                 "different module boundary, a different test strategy (property-based vs example), or a "
+                 "reframed spec. Renaming, retrying, or re-running the same test does not count as structural."),
 }
 
 

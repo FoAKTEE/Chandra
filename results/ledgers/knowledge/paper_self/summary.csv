@@ -246,3 +246,12 @@ ok 79 - the refuter is mandatory: empty findings abort before any judge/ledger a
 ✓ skill-load
 2 skills checked, 2 ok, 0 rejected
 ",2026-09-09T01:26:00+00:00
+2026-09-09T08:42:50.616101+00:00,self,self::kb-redesign-note,1,KB0,5e6eefb,software,hypothesis,"knowledgebase redesign note v3: diagnosis (30 problems), two independent GPT-6 analyses, Claude + GPT-6 refutations, staged A+K-then-B proposal with a 21-node migration DAG",,"[""self::docs-index""]",worker,,,,,the design decision for the kb::* migration nodes; not implementation,a9c1339473186b0eab83fb0e4db266087e322c35a6433cd6e5ca9ec7a0e820a2,,,,,,,,,
+2026-09-09T08:42:50.671172+00:00,self,self::kb-redesign-note,2,KB0,5e6eefb,software,solid,"knowledgebase redesign note v3: diagnosis (30 problems), two independent GPT-6 analyses, Claude + GPT-6 refutations, staged A+K-then-B proposal with a 21-node migration DAG",5e6eefb,"[""self::docs-index""]",validator,tests_failed,True,0,0,solid = the note's demonstrations and the writer-race reproduction execute at append; reviewed by four parties (see the note's §10),f9bd5922cbedf5e178ac2db15c61b2a970bf85cbfcc3d8f82c3bde1095b106ee,python3 notes/kb_redesign/gaps.py && python3 notes/kb_redesign/concurrent.py && test -s notes/kb_redesign/reviews/gpt6-refutation.md,,600,python3 notes/kb_redesign/gaps.py && python3 notes/kb_redesign/concurrent.py && test -s notes/kb_redesign/reviews/gpt6-refutation.md,0.741,0,739d771e09ef558d9d5e098ab5d494211be05704ca2133bda1a5861033c9cbcb,"1. cross-paper readiness -> {""ready"":[],""nodes"":[""P::top""]}
+2. latest r1 claim -> A does NOT hold | history rows: 2 | no supersedes link, no warning
+3. after deleting the last row, verify-chains -> {'ok': True, 'breaks': []}
+4. orphan trial accepted; progress shows -> [{'paper': 'P', 'node_id': 'P::does-not-exist', 'status': None, 'n_knowledge': 0, 'n_trials': 1, 'pass': 1, 'fail': 0}]
+run 0: rows=100 verify={'ok': False, 'breaks': [{'db': 'error', 'paper': 'P', 'ok': False, 'rows': 100, 'hashed': 4, 'break_at': 4, 'reason': 'hash mismatch (edited, dropped, or reordered row)'}]}
+run 1: rows=100 verify={'ok': False, 'breaks': [{'db': 'error', 'paper': 'P', 'ok': False, 'rows': 100, 'hashed': 65, 'break_at': 65, 'reason': 'hash mismatch (edited, dropped, or reordered row)'}]}
+run 2: rows=100 verify={'ok': False, 'breaks': [{'db': 'error', 'paper': 'P', 'ok': False, 'rows': 100, 'hashed': 5, 'break_at': 5, 'reason': 'hash mismatch (edited, dropped, or reordered row)'}]}
+",2026-09-09T08:42:50+00:00

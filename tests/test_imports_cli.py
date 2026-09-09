@@ -29,6 +29,7 @@ PACKAGE_MODULES = [
     "_common.visualization.dag_mermaid",
     "_common.visualization.dashboard",
     "_common.quality.code_quality",
+    "_common.skills.skill_registry",
 ]
 
 FLAT_SHIMS = [
@@ -40,6 +41,7 @@ FLAT_SHIMS = [
     "_common.loop_gate",
     "_common.loop_policy",
     "_common.code_quality",
+    "_common.skill_registry",
 ]
 
 # (flat shim, grouped module) pairs that both expose a `main` CLI entry point.
@@ -51,6 +53,7 @@ SHIM_MAIN_PAIRS = [
     ("_common.loop_gate", "_common.loop.loop_gate"),
     ("_common.loop_policy", "_common.loop.loop_policy"),
     ("_common.code_quality", "_common.quality.code_quality"),
+    ("_common.skill_registry", "_common.skills.skill_registry"),
 ]
 
 # Executable scripts (grouped + flat + the two stage pipelines) that must answer --help.
@@ -70,6 +73,8 @@ CLI_SCRIPTS = [
     "_common/result_database.py",
     "_common/loop_gate.py",
     "_common/contract.py",
+    "_common/skills/skill_registry.py",
+    "_common/skill_registry.py",
 ]
 
 # Ledger CLIs whose `schema` subcommand should print a non-empty spec.

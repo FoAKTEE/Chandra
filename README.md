@@ -45,8 +45,9 @@ flowchart TD
     S2 -- all claims admitted --> S3 --> PA
 ```
 
-The orchestrator (`orchestrator/`, TypeScript on the
-[Claude Agent SDK](https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk))
+The orchestrator (`orchestrator/`, TypeScript with per-role
+[Claude Agent SDK](https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk)
+or Codex CLI runners)
 drives the loop, and every discipline it imposes is enforced in code:
 
 - **Parallel waves** — the scheduler computes the ready frontier (all
@@ -59,7 +60,8 @@ drives the loop, and every discipline it imposes is enforced in code:
 - **Process-isolated adversarial validation** — a refuter session runs in a
   directory containing *only* the allowlisted context pack (kernel, admission
   contract, claim, candidate evidence) and must attempt rejection before a
-  judge may admit. Isolation is physical, not a "do not look" instruction.
+  judge may admit. Filesystem access beyond the pack depends on the runner's
+  sandbox; see the [sandbox caveat](orchestrator/README.md#cross-model-workers).
 - **Delegation policy** — under `.delegation-policy: strict`, ledger appends
   require a delegated role (`CHANDRA_ROLE` ∈ worker / validator / observer);
   the orchestrating session cannot append its own work. `human-override` is
@@ -115,7 +117,8 @@ repo in `/tmp/chandra/<repo>-<hash>/` (override with `CHANDRA_RUNTIME`).
   dependencies (`pytest` only, for the test suite).
 - **Node ≥ 18** — for the orchestrator (TypeScript, built with `tsc`).
 - **Anthropic API access** — real (non-dry-run) missions spawn Claude Agent
-  SDK sessions.
+  SDK sessions by default; roles configured for Codex need an authenticated
+  `codex` CLI instead (the observer stays on the SDK).
 
 ### Install and self-check
 
@@ -148,6 +151,8 @@ it, copy `.claude/`, install the hooks):
    Optional `models` maps per-role model overrides (`worker`, `refuter`,
    `judge`, `observer`, `jobs`); set the refuter to a *different* model for
    cross-model refutation.
+   A role's model may be `codex:<model>` to run that role on the Codex CLI
+   (`worker`, `jobs`, `refuter`, or `judge`; the observer stays on the SDK).
 
 2. Mirror the target paper under `ref-paper/arxiv-<id>/` with a
    `PROVENANCE.md` (stage 0 does this for you on a fresh start).

@@ -10,12 +10,26 @@ import { fileURLToPath } from "node:url";
 import { Journal } from "../src/journal.js";
 import { Ledgers } from "../src/ledger.js";
 import {
-  adjudicateCandidate, buildContextPack, checkIsolation,
+  adjudicateCandidate, buildContextPack, checkIsolation, parseJudgeVerdict,
   type CandidateSubmission, type ContextPack, type ValidatorRunner,
 } from "../src/validator.js";
 
 const P = "arxiv-0000.00000";
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
+
+test("parseJudgeVerdict accepts admit and reject JSON, including fenced output", () => {
+  assert.deepEqual(parseJudgeVerdict('{"verdict":"admit","reasons":"evidence holds"}'),
+    { verdict: "admit", reasons: "evidence holds" });
+  assert.deepEqual(parseJudgeVerdict('```json\n{"verdict":"reject","reasons":"units mismatch"}\n```'),
+    { verdict: "reject", reasons: "units mismatch" });
+});
+
+test("parseJudgeVerdict fails closed on unparseable or invalid verdicts", () => {
+  for (const raw of ["", "looks good", "{not JSON}", '{"verdict":"maybe"}',
+                     '{"verdict":"admit","reasons":{"bad":"shape"}}']) {
+    assert.equal(parseJudgeVerdict(raw).verdict, "reject", raw);
+  }
+});
 
 function tmpRepo(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "chandra-val-"));

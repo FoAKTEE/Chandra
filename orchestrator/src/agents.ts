@@ -1,13 +1,22 @@
-/** SDK-touching layer: spawns real Claude Agent SDK sessions. Kept thin and
- * imported dynamically so the pure core (dag/scheduler/journal/ledger) tests
- * run without the SDK or an API key.
+/** Worker sessions through the SDK or Codex CLI. The SDK is imported only
+ * inside SDK methods, so CLI runners and the pure core need no SDK or key.
  *
  * Context-pack discipline (alignment kernel §5): a worker receives the kernel,
  * the admission contract, and ONLY its node's inputs — never the parent's
  * context. Isolation is what the session can read, not a prose instruction. */
 import * as path from "node:path";
+import { runCodexExec, type CodexOptions } from "./codex.js";
+import { runtimeDir } from "./runtime.js";
 import type { WorkerRunner } from "./scheduler.js";
 import type { WorkerTask } from "./types.js";
+
+const CODEX_PREAMBLE = [
+  `Read alignment.md, _common/contracts/research_admission_contract.md, and`,
+  `.claude/skills/INDEX.md first. When a skill description matches your task,`,
+  `load it by reading its SKILL.md. Land outcomes ONLY through the gated ledger CLIs.`,
+  `Never run git commit. Your final message is ignored — only the ledger diff counts.`,
+  ``,
+].join("\n");
 
 export function workerPrompt(task: WorkerTask): string {
   const { packet, paper } = task;
@@ -82,6 +91,27 @@ export class SdkWorkerRunner implements WorkerRunner {
   }
 }
 
+/** One CLI session per packet; the scheduler still measures ledger diffs. */
+export class CodexWorkerRunner implements WorkerRunner {
+  readonly name = "codex-worker";
+  constructor(private opts: CodexOptions & { model?: string } = {}) {}
+
+  async runWorker(task: WorkerTask): Promise<{ detail: string; windowsUsed: number }> {
+    const result = await runCodexExec({
+      ...this.opts,
+      prompt: CODEX_PREAMBLE + workerPrompt(task),
+      cwd: task.repoRoot,
+      role: "worker",
+      outputDir: runtimeDir(task.repoRoot, `paper_${task.paper}`, "codex"),
+      id: `w${task.wave}-${task.packet[0]?.id ?? task.node.id}`,
+    });
+    return {
+      detail: `codex model=${this.opts.model ?? "default"} exit=${result.exitCode} tail=${result.finalMessage.slice(-200)}`,
+      windowsUsed: 1,
+    };
+  }
+}
+
 /** Dry-run worker: journals the assignment and does nothing — used by
  * `main.ts run --dry-run` and by scheduler tests. */
 export class NoopWorkerRunner implements WorkerRunner {
@@ -102,7 +132,7 @@ export function kernelPaths(repoRoot: string): string[] {
 
 import type { Job, JobContext, JobRunner } from "./jobs.js";
 
-function jobPrompt(job: Job, ctx: JobContext): string {
+export function jobPrompt(job: Job, ctx: JobContext): string {
   const shared = [
     `Read first: alignment.md (kernel; binding), _common/contracts/research_admission_contract.md.`,
     `Your appends run as a delegated agent; land ALL outcomes via the gated ledger CLIs.`,
@@ -164,5 +194,26 @@ export class SdkJobRunner implements JobRunner {
       if (m.type === "result") lastText = m.result ?? "";
     }
     return { detail: `${job.kind} tail=${lastText.slice(0, 160)}`, windowsUsed: 1 + compactions };
+  }
+}
+
+/** Non-packet jobs use the same prompts and worker role through the CLI. */
+export class CodexJobRunner implements JobRunner {
+  readonly name = "codex-job";
+  constructor(private opts: CodexOptions & { model?: string } = {}) {}
+
+  async run(job: Job, ctx: JobContext): Promise<{ detail: string; windowsUsed: number }> {
+    const result = await runCodexExec({
+      ...this.opts,
+      prompt: CODEX_PREAMBLE + jobPrompt(job, ctx),
+      cwd: ctx.repoRoot,
+      role: "worker",
+      outputDir: runtimeDir(ctx.repoRoot, `paper_${ctx.paper}`, "codex"),
+      id: `w${ctx.wave}-${job.id}`,
+    });
+    return {
+      detail: `codex model=${this.opts.model ?? "default"} exit=${result.exitCode} tail=${result.finalMessage.slice(-200)}`,
+      windowsUsed: 1,
+    };
   }
 }

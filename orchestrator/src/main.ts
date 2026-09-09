@@ -2,7 +2,7 @@
  * mission completes or the gate halts. Light self-prompting: the orchestrator
  * holds only the journal tail + frontier — worker transcripts never enter it. */
 import * as path from "node:path";
-import { NoopWorkerRunner, SdkJobRunner, SdkWorkerRunner } from "./agents.js";
+import { CodexJobRunner, CodexWorkerRunner, NoopWorkerRunner, SdkJobRunner, SdkWorkerRunner } from "./agents.js";
 import { buildMission, missionComplete, readyFrontier } from "./dag.js";
 import { DEFAULT_JOB_BUDGETS, cliProbes, readyJobs, runJobs,
          type JobBudgets, type JobKind, type JobRunner, type ReadinessProbes } from "./jobs.js";
@@ -11,7 +11,7 @@ import { DEFAULT_BUDGETS, advanceGate, decideGate, gateSignal, type GateState } 
 import { commitGateInstalled, commitWave, isGitRepo } from "./gitops.js";
 import { Journal } from "./journal.js";
 import { Ledgers } from "./ledger.js";
-import { loadMissionSpec, readHumanSignals } from "./missionspec.js";
+import { loadMissionSpec, parseModelSpec, readHumanSignals, type MissionSpec } from "./missionspec.js";
 import { SdkObserverRunner, TruncatingObserver, notesLayout, runObserver, waveHistory } from "./observer.js";
 import { runtimeDir } from "./runtime.js";
 import { runWave, tallyReports } from "./scheduler.js";
@@ -43,6 +43,26 @@ function parseArgs(argv: string[]): Args {
   };
 }
 
+/** Select per-role backends without importing an SDK or starting a session. */
+export function buildRunners(spec: MissionSpec | null, dryRun: boolean):
+  Pick<MissionLoopDeps, "runner" | "observerRunner" | "jobRunners"> {
+  if (dryRun) return {
+    runner: new NoopWorkerRunner(), observerRunner: new TruncatingObserver(), jobRunners: undefined,
+  };
+  const worker = parseModelSpec(spec?.models?.worker);
+  const jobs = parseModelSpec(spec?.models?.jobs);
+  const jobRunner = () => jobs.runner === "codex"
+    ? new CodexJobRunner({ ...spec?.codex, model: jobs.model })
+    : new SdkJobRunner({ model: jobs.model });
+  return {
+    runner: worker.runner === "codex"
+      ? new CodexWorkerRunner({ ...spec?.codex, model: worker.model })
+      : new SdkWorkerRunner({ model: worker.model }),
+    observerRunner: new SdkObserverRunner({ model: spec?.models?.observer }),
+    jobRunners: { decompose: jobRunner(), acquire: jobRunner(), "write-refresh": jobRunner() },
+  };
+}
+
 export async function main(argv: string[]): Promise<number> {
   const args = parseArgs(argv);
   const ledgers = new Ledgers(args.repoRoot);
@@ -70,15 +90,7 @@ export async function main(argv: string[]): Promise<number> {
     maxWorkers: args.maxWorkers, maxWaves: args.maxWaves,
     packetSize: spec?.packetSize,
     digestThreshold: spec?.digestThreshold,
-    runner: args.dryRun ? new NoopWorkerRunner()
-      : new SdkWorkerRunner({ model: spec?.models?.worker }),
-    observerRunner: args.dryRun ? new TruncatingObserver()
-      : new SdkObserverRunner({ model: spec?.models?.observer }),
-    jobRunners: args.dryRun ? undefined : {
-      decompose: new SdkJobRunner({ model: spec?.models?.jobs }),
-      acquire: new SdkJobRunner({ model: spec?.models?.jobs }),
-      "write-refresh": new SdkJobRunner({ model: spec?.models?.jobs }),
-    },
+    ...buildRunners(spec, args.dryRun),
     dryRun: args.dryRun,
   });
 }

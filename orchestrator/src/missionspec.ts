@@ -10,6 +10,7 @@
  *                                 steering history lives in git) */
 import * as fs from "node:fs";
 import * as path from "node:path";
+import type { CodexOptions } from "./codex.js";
 
 export interface MissionSpec {
   paper: string;
@@ -26,6 +27,15 @@ export interface MissionSpec {
     observer?: string;
     jobs?: string;
   };
+  codex?: CodexOptions;
+}
+
+/** The prefix selects the runner independently for each role. */
+export function parseModelSpec(model?: string): { runner: "sdk" | "codex"; model?: string } {
+  if (!model?.startsWith("codex:")) return { runner: "sdk", model };
+  const codexModel = model.slice("codex:".length);
+  if (!codexModel.trim()) throw new Error("codex: must specify a model");
+  return { runner: "codex", model: codexModel };
 }
 
 export function loadMissionSpec(repoRoot: string): MissionSpec | null {

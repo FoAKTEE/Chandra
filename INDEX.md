@@ -74,5 +74,5 @@ the job kinds — it is not a workflow a human walks.
 - `_common/hooks/` — tracked git hooks; `commit-msg` enforces the template (`install.sh` activates via `core.hooksPath`).
 - `notes/multi_timescale_tracking_template.md` — three-note hierarchy: iteration (current wave only), nodal (last ~10), research state (long memory, hard ≤10KB — the observer agent prunes it; history in git).
 - `notes/pua_skill.md` — OPT-IN motivational-pressure skill (formerly at `alignment.md`). Never injected; load explicitly if wanted.
-- `orchestrator/` — v2 TypeScript runtime (Claude Agent SDK): topological scheduler, parallel workers, process-isolated validators, observer memory agent, 5-window human digest cadence.
+- `orchestrator/` — v2 TypeScript runtime (per-role runners: Claude Agent SDK or Codex CLI): topological scheduler, parallel workers, process-isolated validators, observer memory agent, 5-window human digest cadence.
 - `tests/` — pytest smoke + rejection checks; the infra self-hosts on §0 (`python3 -m pytest`).

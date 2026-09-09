@@ -7,16 +7,77 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { workerPrompt } from "../src/agents.js";
+import { CodexJobRunner, CodexWorkerRunner, NoopWorkerRunner, SdkJobRunner, SdkWorkerRunner, workerPrompt } from "../src/agents.js";
 import { Journal } from "../src/journal.js";
 import { Ledgers } from "../src/ledger.js";
-import { runMissionLoop } from "../src/main.js";
-import { loadMissionSpec, readHumanSignals } from "../src/missionspec.js";
-import { TruncatingObserver } from "../src/observer.js";
+import { buildRunners, runMissionLoop } from "../src/main.js";
+import { loadMissionSpec, parseModelSpec, readHumanSignals } from "../src/missionspec.js";
+import { SdkObserverRunner, TruncatingObserver } from "../src/observer.js";
 import type { MissionNode } from "../src/types.js";
+import { buildValidatorRunner, CodexValidatorRunner, SdkValidatorRunner } from "../src/validator.js";
 
 const P = "arxiv-5555.55555";
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
+
+for (const [model, expected] of [
+  [undefined, { runner: "sdk", model: undefined }],
+  ["claude-x", { runner: "sdk", model: "claude-x" }],
+  ["codex:gpt-6-astra", { runner: "codex", model: "gpt-6-astra" }],
+] as const) {
+  test(`parseModelSpec selects the runner for ${model}`, () => {
+    assert.deepEqual(parseModelSpec(model), expected);
+  });
+}
+
+test("parseModelSpec rejects an empty codex model", () => {
+  assert.throws(() => parseModelSpec("codex:"), /must specify a model/);
+  assert.throws(() => parseModelSpec("codex:  "), /must specify a model/);
+});
+
+test("buildRunners selects worker and jobs independently and keeps the observer on SDK", () => {
+  const selected = buildRunners({ paper: P, models: { worker: "codex:x", jobs: "codex:y" } }, false);
+  assert.ok(selected.runner instanceof CodexWorkerRunner);
+  assert.ok(selected.observerRunner instanceof SdkObserverRunner);
+  for (const kind of ["decompose", "acquire", "write-refresh"] as const) {
+    assert.ok(selected.jobRunners?.[kind] instanceof CodexJobRunner);
+  }
+  const workerOnly = buildRunners({ paper: P, models: { worker: "codex:x" } }, false);
+  assert.ok(workerOnly.runner instanceof CodexWorkerRunner);
+  assert.ok(workerOnly.jobRunners?.decompose instanceof SdkJobRunner);
+  const jobsOnly = buildRunners({ paper: P, models: { jobs: "codex:x" } }, false);
+  assert.ok(jobsOnly.runner instanceof SdkWorkerRunner);
+  assert.ok(jobsOnly.jobRunners?.decompose instanceof CodexJobRunner);
+});
+
+test("buildRunners preserves SDK defaults and dry-run runner selection", () => {
+  for (const spec of [null, { paper: P }]) {
+    const selected = buildRunners(spec, false);
+    assert.ok(selected.runner instanceof SdkWorkerRunner);
+    assert.ok(selected.observerRunner instanceof SdkObserverRunner);
+    for (const job of Object.values(selected.jobRunners!)) assert.ok(job instanceof SdkJobRunner);
+  }
+  const dry = buildRunners({ paper: P, models: { worker: "codex:x", jobs: "codex:x" } }, true);
+  assert.ok(dry.runner instanceof NoopWorkerRunner);
+  assert.ok(dry.observerRunner instanceof TruncatingObserver);
+  assert.equal(dry.jobRunners, undefined);
+});
+
+test("validator factory selects SDK, Codex, or mixed per-role runners without spawning", () => {
+  assert.ok(buildValidatorRunner(null) instanceof SdkValidatorRunner);
+  assert.ok(buildValidatorRunner({ paper: P, models: { refuter: "codex:x", judge: "codex:y" } })
+    instanceof CodexValidatorRunner);
+  assert.equal(buildValidatorRunner({ paper: P, models: { refuter: "codex:x" } }).name, "mixed-validator");
+  assert.equal(buildValidatorRunner({ paper: P, models: { judge: "codex:y" } }).name, "mixed-validator");
+});
+
+test("mission.json preserves codex models and CLI options", t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "chandra-codex-spec-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const spec = { paper: P, models: { worker: "codex:gpt-6-astra", refuter: "codex:gpt-6-astra" },
+    codex: { effort: "max", sandbox: "danger-full-access", bin: "/tmp/custom-codex", timeoutSeconds: 90 } };
+  fs.writeFileSync(path.join(dir, "mission.json"), JSON.stringify(spec));
+  assert.deepEqual(loadMissionSpec(dir), spec);
+});
 
 test("mission.json loads and validates; absent file -> null", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "chandra-spec-"));

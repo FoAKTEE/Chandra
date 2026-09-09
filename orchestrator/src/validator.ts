@@ -1,10 +1,11 @@
 /** Process-isolated adversarial validation (stage-2 gate, v2).
  *
- * Isolation is PHYSICAL, not prose: the refuter and judge run with cwd set to
+ * The refuter and judge run with cwd set to
  * a context-pack directory containing ONLY the allowlisted files (kernel,
  * admission contract, stage spec, the claim, the candidate evidence). The
  * defender's transcript, the rest of the repo, and other nodes' work are not
- * in the pack, so they cannot be read — no "do not look at X" instructions.
+ * copied into the pack. Filesystem reach also depends on the runner's sandbox;
+ * cwd alone is not an access-control boundary.
  *
  * Sequence is enforced in code: the refuter MUST run first and produce
  * findings; the judge sees the pack + findings; an admit verdict is executed
@@ -15,8 +16,11 @@ import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { runCodexExec, type CodexOptions } from "./codex.js";
 import type { Journal } from "./journal.js";
 import type { Ledgers } from "./ledger.js";
+import { loadMissionSpec, parseModelSpec, type MissionSpec } from "./missionspec.js";
+import { runtimeDir } from "./runtime.js";
 
 export interface CandidateSubmission {
   paper: string;
@@ -49,6 +53,47 @@ export interface ValidatorRunner {
   readonly name: string;
   refute(pack: ContextPack, claim: string): Promise<RefuterReport>;
   judge(pack: ContextPack, claim: string, findings: string): Promise<JudgeVerdict>;
+}
+
+/** Shared judge parser: malformed output fails closed for either backend. */
+export function parseJudgeVerdict(raw: string): JudgeVerdict {
+  const m = raw.match(/\{[\s\S]*\}/);
+  if (!m) return { verdict: "reject", reasons: `unparseable judge output: ${raw.slice(0, 200)}` };
+  try {
+    const parsed = JSON.parse(m[0]) as { verdict?: unknown; reasons?: unknown };
+    if (typeof parsed.reasons !== "string" && parsed.reasons != null) {
+      return { verdict: "reject", reasons: `unparseable judge reasons: ${raw.slice(0, 200)}` };
+    }
+    return {
+      verdict: parsed.verdict === "admit" ? "admit" : "reject",
+      reasons: parsed.reasons ?? "",
+    };
+  } catch {
+    return { verdict: "reject", reasons: `unparseable judge JSON: ${raw.slice(0, 200)}` };
+  }
+}
+
+export function refuterPrompt(claim: string): string {
+  return [
+    `You are an adversarial REFUTER. This directory is your ENTIRE context`,
+    `(see MANIFEST.json). Read CLAIM.md and the evidence, then try HARD to`,
+    `refute the claim: "${claim}". Check the validation gates in`,
+    `pipelines/2-work/spec.md (evidence-type match, units/regimes,`,
+    `approximation obligations, protocol completeness). Your final message:`,
+    `your findings — every weakness found, or a statement of what you tried`,
+    `and why refutation failed. Never say "looks good" without listing the`,
+    `specific refutation attempts that failed.`,
+  ].join("\n");
+}
+
+export function judgePrompt(claim: string, findings: string): string {
+  return [
+    `You are the admission JUDGE. This directory is your entire context.`,
+    `Claim: "${claim}". The independent refuter reported:\n---\n${findings}\n---`,
+    `Weigh the refutation against the evidence and the validation gates in`,
+    `pipelines/2-work/spec.md. Your final message must be EXACTLY one JSON`,
+    `object: {"verdict": "admit"|"reject", "reasons": "<one paragraph>"}.`,
+  ].join("\n");
 }
 
 const ALWAYS_PACKED = [
@@ -111,9 +156,11 @@ export async function adjudicateCandidate(candidate: CandidateSubmission, deps: 
   repoRoot: string;
   ledgers: Ledgers;
   journal: Journal;
-  runner: ValidatorRunner;
+  /** Omit to select refuter and judge independently from mission.json. */
+  runner?: ValidatorRunner;
 }): Promise<{ outcome: ValidationOutcome; detail: string }> {
-  const { repoRoot, ledgers, journal, runner } = deps;
+  const { repoRoot, ledgers, journal } = deps;
+  const runner = deps.runner ?? buildValidatorRunner(loadMissionSpec(repoRoot));
   const pack = buildContextPack(repoRoot, candidate);
   try {
     const iso = checkIsolation(pack);
@@ -156,8 +203,7 @@ export async function adjudicateCandidate(candidate: CandidateSubmission, deps: 
   }
 }
 
-/** Real SDK validators: two fresh sessions with cwd = the pack dir and
- * read-only tools — they physically cannot reach the repo or the defender. */
+/** Real SDK validators: two fresh sessions with cwd = the pack dir. */
 export class SdkValidatorRunner implements ValidatorRunner {
   readonly name = "sdk-validator";
   constructor(private opts: { maxTurns?: number; refuterModel?: string; judgeModel?: string } = {}) {}
@@ -185,36 +231,60 @@ export class SdkValidatorRunner implements ValidatorRunner {
   }
 
   async refute(pack: ContextPack, claim: string): Promise<RefuterReport> {
-    const findings = await this.session(pack.dir, [
-      `You are an adversarial REFUTER. This directory is your ENTIRE context`,
-      `(see MANIFEST.json). Read CLAIM.md and the evidence, then try HARD to`,
-      `refute the claim: "${claim}". Check the validation gates in`,
-      `pipelines/2-work/spec.md (evidence-type match, units/regimes,`,
-      `approximation obligations, protocol completeness). Your final message:`,
-      `your findings — every weakness found, or a statement of what you tried`,
-      `and why refutation failed. Never say "looks good" without listing the`,
-      `specific refutation attempts that failed.`,
-    ].join("\n"), this.opts.refuterModel);
+    const findings = await this.session(pack.dir, refuterPrompt(claim), this.opts.refuterModel);
     return { findings };
   }
 
   async judge(pack: ContextPack, claim: string, findings: string): Promise<JudgeVerdict> {
-    const raw = await this.session(pack.dir, [
-      `You are the admission JUDGE. This directory is your entire context.`,
-      `Claim: "${claim}". The independent refuter reported:\n---\n${findings}\n---`,
-      `Weigh the refutation against the evidence and the validation gates in`,
-      `pipelines/2-work/spec.md. Your final message must be EXACTLY one JSON`,
-      `object: {"verdict": "admit"|"reject", "reasons": "<one paragraph>"}.`,
-    ].join("\n"), this.opts.judgeModel);
-    const m = raw.match(/\{[\s\S]*\}/);
-    if (!m) return { verdict: "reject", reasons: `unparseable judge output: ${raw.slice(0, 200)}` };
-    try {
-      const parsed = JSON.parse(m[0]) as JudgeVerdict;
-      return parsed.verdict === "admit"
-        ? { verdict: "admit", reasons: parsed.reasons ?? "" }
-        : { verdict: "reject", reasons: parsed.reasons ?? "" };
-    } catch {
-      return { verdict: "reject", reasons: `unparseable judge JSON: ${raw.slice(0, 200)}` };
-    }
+    const raw = await this.session(pack.dir, judgePrompt(claim, findings), this.opts.judgeModel);
+    return parseJudgeVerdict(raw);
   }
+}
+
+/** CLI validators default to read-only. If bwrap fails on the host, callers
+ * must explicitly set codex.sandbox; with danger-full-access the isolation
+ * rests on cwd + prompt only, not a filesystem boundary. */
+export class CodexValidatorRunner implements ValidatorRunner {
+  readonly name = "codex-validator";
+  constructor(private opts: CodexOptions & {
+    model?: string; refuterModel?: string; judgeModel?: string;
+  } = {}) {}
+
+  private async session(pack: ContextPack, role: "refuter" | "judge", prompt: string): Promise<string> {
+    const result = await runCodexExec({
+      ...this.opts,
+      model: (role === "refuter" ? this.opts.refuterModel : this.opts.judgeModel) ?? this.opts.model,
+      prompt,
+      cwd: pack.dir,
+      role: "validator",
+      // Logs must stay outside the manifest-audited context pack.
+      outputDir: runtimeDir(pack.dir, "codex"),
+      id: `${path.basename(pack.dir)}-${role}`,
+    });
+    return result.finalMessage;
+  }
+
+  async refute(pack: ContextPack, claim: string): Promise<RefuterReport> {
+    return { findings: await this.session(pack, "refuter", refuterPrompt(claim)) };
+  }
+
+  async judge(pack: ContextPack, claim: string, findings: string): Promise<JudgeVerdict> {
+    return parseJudgeVerdict(await this.session(pack, "judge", judgePrompt(claim, findings)));
+  }
+}
+
+/** A mission may mix model families even between refutation and judgment. */
+export function buildValidatorRunner(spec: MissionSpec | null): ValidatorRunner {
+  const refuter = parseModelSpec(spec?.models?.refuter);
+  const judge = parseModelSpec(spec?.models?.judge);
+  const models = { refuterModel: refuter.model, judgeModel: judge.model };
+  const sdk = new SdkValidatorRunner(models);
+  const codex = new CodexValidatorRunner({ ...spec?.codex, ...models });
+  if (refuter.runner === "sdk" && judge.runner === "sdk") return sdk;
+  if (refuter.runner === "codex" && judge.runner === "codex") return codex;
+  return {
+    name: "mixed-validator",
+    refute: (pack, claim) => (refuter.runner === "codex" ? codex : sdk).refute(pack, claim),
+    judge: (pack, claim, findings) => (judge.runner === "codex" ? codex : sdk).judge(pack, claim, findings),
+  };
 }

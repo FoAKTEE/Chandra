@@ -13,6 +13,16 @@ set -u
 
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || printf '%s' "$(cd "$(dirname "$0")/.." && pwd)")"
 
+# --with-skills (or CHANDRA_INJECT_SKILLS=1): append the <available-skills>
+# briefing for clients that support hooks but not native skill loading. Off by
+# default — Claude Code already lists .claude/skills/* and must not pay twice.
+WITH_SKILLS="${CHANDRA_INJECT_SKILLS:-0}"
+for arg in "$@"; do
+    case "$arg" in
+        --with-skills) WITH_SKILLS=1 ;;
+    esac
+done
+
 emit_file() {
     local label="$1" path="$2"
     printf '\n----- BEGIN %s (%s) -----\n' "$label" "$path"
@@ -30,6 +40,12 @@ printf '\n=== CHANDRA INFRA (source of truth: %s) ===\n' "$REPO_ROOT"
 emit_file "alignment.md (kernel)" "$REPO_ROOT/alignment.md"
 emit_file "_common/contracts/research_admission_contract.md" "$REPO_ROOT/_common/contracts/research_admission_contract.md"
 
-printf '\nRead on demand (do NOT inline): INDEX.md · _common/contracts/ · notes/ · pipelines/*/spec.md\n'
+printf '\nRead on demand (do NOT inline): INDEX.md · _common/contracts/ · notes/ · pipelines/*/spec.md · .claude/skills/INDEX.md\n'
+
+if [ "$WITH_SKILLS" = "1" ]; then
+    printf '\n'
+    python3 "$REPO_ROOT/_common/skill_registry.py" briefing --root "$REPO_ROOT" 2>/dev/null \
+        || printf '(skills briefing unavailable: _common/skill_registry.py failed)\n'
+fi
 printf '\n=== END CHANDRA INFRA ===\n'
 printf '</session-start-briefing>\n'

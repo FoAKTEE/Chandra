@@ -29,6 +29,9 @@ under a `tmp_path`; the real `*-database/` ledgers are never touched.
 | `test_dag_mermaid.py` | DAG-as-Mermaid renderer: merge, duplicates, node-view, per-node progress off the giant DAG |
 | `test_dashboard.py` | HTML mission dashboard: render paths, chain badges + KPI arithmetic, SVG DAG topology, cycle reporting, ledger-text escaping, self-containment, CLI |
 | `test_commit_msg_gate.py` | commit-msg hook: title grammar admit + reject cases, body/claim-tag warnings |
+| `test_software_domain.py` | the `software` domain (self-hosted missions): the three DOMAINS enums agree, tag / metric / evidence tables complete, rows validate, `describe-domain` CLIs, contract manifest |
+| `test_skill_registry.py` | skill registry: frontmatter parser, admit + rejection gates (name/dir, description, unknown keys, dangling references, executed Verify), index + briefing, scaffold, promote / harvest, CLI exit codes, every shipped skill validates |
+| `test_skill_loading.py` | skill loading outside Claude Code: `AGENTS.md` names only real files; the SessionStart hook lists every skill only with `--with-skills` / `CHANDRA_INJECT_SKILLS=1` |
 
 `factories.py` holds the minimal schema-valid rows; mutating one field is how the
 rejection cases are built.

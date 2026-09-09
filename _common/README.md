@@ -28,6 +28,14 @@ compatibility wrappers; the implementation now lives in grouped subpackages.
   dashboard (KPIs, inline-SVG DAG with node drill-down, searchable ledger
   tables, hash-chain badges; light + dark).
 - `quality/` — coding/review prompt bundles.
+- `skills/` — `skill_registry.py`, the gate skills pass to enter methodology
+  source: frontmatter + name/dir + dangling-reference checks and an executed
+  `## Verify` block (`validate --exec`); `render-index` (the generated
+  `.claude/skills/INDEX.md`), `briefing` (the `<available-skills>` block for
+  clients without native skill loading), `new` (scaffold), `promote` /
+  `harvest` (gated landing of runtime drafts). Flat wrapper:
+  `_common/skill_registry.py`. Self-hosted by `tests/test_skill_registry.py`,
+  which validates every shipped skill with its Verify block executed.
 
 ## Compatibility Wrappers
 
@@ -40,6 +48,7 @@ python _common/knowledge_database.py query --paper P
 python _common/claims_database.py schema
 python _common/loop_policy.py describe-domain --domain symbolic
 python _common/loop_gate.py status
+python _common/skill_registry.py validate --exec
 ```
 
 Those files import and dispatch to the grouped implementations. New internal
@@ -57,6 +66,7 @@ Run after touching `_common`:
 ```bash
 python3 -m pytest
 python _common/ledgers/result_database.py schema
+python _common/skill_registry.py validate --exec   # every shipped skill, Verify executed
 ```
 
 For the stage adapters, also run a temporary `init -> check-isolation -> next ->

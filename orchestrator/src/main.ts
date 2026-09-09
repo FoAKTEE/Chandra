@@ -15,6 +15,7 @@ import { loadMissionSpec, parseModelSpec, readHumanSignals, type MissionSpec } f
 import { SdkObserverRunner, TruncatingObserver, notesLayout, runObserver, waveHistory } from "./observer.js";
 import { runtimeDir } from "./runtime.js";
 import { runWave, tallyReports } from "./scheduler.js";
+import { harvestSkillDrafts, skillDraftsDir } from "./skills.js";
 
 interface Args {
   cmd: string;
@@ -206,6 +207,23 @@ export async function runMissionLoop(deps: MissionLoopDeps): Promise<number> {
       layout, plan, result, history: waveHistory(journal),
       journal, runner: observerRunner, paper,
     });
+    // reusable procedures enter methodology source only through the registry gate
+    try {
+      const report = await harvestSkillDrafts(repoRoot, skillDraftsDir(repoRoot, paper), wave);
+      const promoted = report.promoted.map(s => s.name);
+      const rejected = report.rejected.map(({ name, errors }) => ({ name, errors }));
+      if (promoted.length > 0 || rejected.length > 0) {
+        journal.append({ type: "skills_harvested", wave, promoted, rejected });
+        log(`wave ${wave}: skills promoted=${promoted.join(",") || "-"} rejected=${rejected.length}`);
+      }
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      journal.append({
+        type: "skills_harvested", wave, promoted: [],
+        rejected: [{ name: "harvest", errors: [message] }],
+      });
+      log(`WARNING: wave ${wave}: skills harvest failed: ${message}`);
+    }
     // circuit breaker (component-wise progress; verified statuses only)
     gateState = advanceGate(gateState, wave, await gateSignal(ledgers, paper));
     const decision = decideGate(gateState, DEFAULT_BUDGETS);

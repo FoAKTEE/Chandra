@@ -6,6 +6,19 @@ process-isolated adversarial validation, maintains the observer memory, and
 paces human digests. See the repository [README](../README.md) for the
 methodology; this directory is only the runtime.
 
+**Skill autowriting** — workers and jobs draft reusable procedures at
+`$CHANDRA_RUNTIME/paper_<P>/skills/<kebab-name>/SKILL.md`, following
+`.claude/skills/skill-write/SKILL.md`. The runtime home defaults to
+`/tmp/chandra/<repo>-<hash>/` outside the repo; `CHANDRA_RUNTIME` overrides it.
+After the observer pass each wave, `python3 _common/skill_registry.py harvest
+<drafts-dir> --root <repo>` validates drafts and executes their Verify blocks.
+The registry promotes admitted skills into `.claude/skills/` and regenerates
+its index; the wave commit carries both. Promoted drafts move to
+`<drafts-dir>/.promoted/<name>-w<wave>` for inspection; rejected drafts stay in
+place. Non-empty harvests journal `skills_harvested` with names and rejection
+errors. A registry crash is journaled and logged as a warning, and the mission
+continues. Workers never copy drafts into `.claude/skills/` themselves.
+
 ## Build, test, run
 
 ```bash
@@ -84,6 +97,7 @@ diagnostic: progress still comes from ledger diffs and the executable gate.
 | `src/codex.ts` | SDK-free Codex CLI spawn contract, role defaults, closed stdin, runtime transcripts and timeouts |
 | `src/validator.ts` | Process-isolated refuter → judge validation packs |
 | `src/observer.ts` | Three-note memory; 10 KB research-state cap enforced in code |
+| `src/skills.ts` | Runtime skill drafts, registry-gated harvest, and archives of promoted drafts |
 | `src/gate.ts` | Progress circuit breaker (component-wise, verified statuses only) |
 | `src/digest.ts` | Human digest after 5 completed context windows |
 | `src/gitops.ts` | Per-wave commits through the commit-message gate |

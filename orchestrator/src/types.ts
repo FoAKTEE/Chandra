@@ -84,6 +84,7 @@ export type Message =
   | { type: "wave_finished"; wave: number; admitted: number; rejected: number; failed: number; noProgress: number }
   | { type: "validation_verdict"; wave: number; node: string; verdict: "admit" | "reject"; refuterFindings: string }
   | { type: "memory_pruned"; wave: number; researchStateBytes: number }
+  | { type: "skills_harvested"; wave: number; promoted: string[]; rejected: { name: string; errors: string[] }[] }
   | { type: "digest_emitted"; afterWindows: number; wave: number; path: string }
   | { type: "wave_committed"; wave: number; sha: string }
   | { type: "gate_decision"; wave: number; decision: string; noProgressStreak: number }

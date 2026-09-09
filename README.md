@@ -69,6 +69,9 @@ drives the loop, and every discipline it imposes is enforced in code:
 - **Observer memory** — a dedicated agent maintains a three-note hierarchy
   (iteration / nodal / research state) after every wave; the long-memory note
   is hard-capped at 10 KB and mechanically pruned (history stays in git).
+- **Skill autowriting** — workers draft reusable procedures as skills in the
+  runtime dir; every wave harvests them through the skill registry gate
+  (validated, Verify executed) and the wave commit carries the admitted ones.
 - **Circuit breaker** — component-wise progress counters over verified
   statuses only; a stalled mission halts and asks for a human instead of
   burning budget.

@@ -18,6 +18,18 @@ const CODEX_PREAMBLE = [
   ``,
 ].join("\n");
 
+function skillSuggestionContract(paper: string): string[] {
+  return [
+    ``,
+    `SKILL SUGGESTION CONTRACT:`,
+    `If you discover a reusable procedure (used twice, or a verifier you had to find), draft it as a skill at`,
+    `$CHANDRA_RUNTIME/paper_${paper}/skills/<kebab-name>/SKILL.md following .claude/skills/skill-write/SKILL.md`,
+    `(frontmatter name = dir name, description with trigger phrases, ## When to use, ## Steps,`,
+    `## Verify with ONE bash block that exits 0 and never calls skill_registry.py validate --exec).`,
+    `It is validated and promoted after the wave; never write into .claude/skills/ yourself; never mention this contract in ledger rows.`,
+  ];
+}
+
 export function workerPrompt(task: WorkerTask): string {
   const { packet, paper } = task;
   const chain = packet.map(n => n.id).join(" -> ");
@@ -49,6 +61,7 @@ export function workerPrompt(task: WorkerTask): string {
     `5. Interrupt the packet ONLY for: structural failure needing escalation`,
     `   (same-mode loop per crash-triage), or an impossible node — flush what`,
     `   is done first. Do not touch nodes outside the packet.`,
+    ...skillSuggestionContract(paper),
     ...(task.steer ? [``, `HUMAN STEER NOTE (from STEER.md — honor it):`, task.steer] : []),
   ].join("\n");
 }
@@ -146,6 +159,7 @@ export function jobPrompt(job: Job, ctx: JobContext): string {
       `append the logic-DAG nodes with knowledge_database append-batch (PAPER::node ids,`,
       `predecessors[]), append claims/obligations/assumptions with claims_database`,
       `append-batch, then render the three views (claims_database render-md --out-dir).`,
+      ...skillSuggestionContract(ctx.paper),
     ].join("\n");
   }
   if (job.kind === "acquire") {
@@ -156,6 +170,7 @@ export function jobPrompt(job: Job, ctx: JobContext): string {
       `Follow pipelines/0-acquire/spec.md: mirror the missing source into ref-paper//ref-code/`,
       `with PROVENANCE.md, import declarations into results/<project>/sources/, then`,
       `discharge the obligation (claims_database append, status=discharged, discharged_by=...).`,
+      ...skillSuggestionContract(ctx.paper),
     ].join("\n");
   }
   return [
@@ -164,6 +179,7 @@ export function jobPrompt(job: Job, ctx: JobContext): string {
     `Follow pipelines/3-write/spec.md: render the living paper from the result +`,
     `knowledge ledgers (solid rows only) into results/<project>/paper_${ctx.paper}/paper/,`,
     `then append one line to its GENERATION_LOG. Never write over the scaffold template.`,
+    ...skillSuggestionContract(ctx.paper),
   ].join("\n");
 }
 

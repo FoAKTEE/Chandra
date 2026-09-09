@@ -21,6 +21,7 @@ import { Ledgers } from "../src/ledger.js";
 import { runMissionLoop } from "../src/main.js";
 import { RESEARCH_STATE_CAP_BYTES, TruncatingObserver } from "../src/observer.js";
 import type { WorkerRunner } from "../src/scheduler.js";
+import { skillDraftsDir } from "../src/skills.js";
 import type { WorkerTask } from "../src/types.js";
 import { adjudicateCandidate, type ValidatorRunner } from "../src/validator.js";
 
@@ -35,6 +36,7 @@ function toyRepo(): string {
   RUNTIME_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "chandra-runtime-"));
   process.env.CHANDRA_RUNTIME = RUNTIME_HOME;
   fs.symlinkSync(path.join(REPO_ROOT, "_common"), path.join(dir, "_common"));
+  fs.mkdirSync(path.join(dir, ".claude", "skills"), { recursive: true });
   for (const rel of ["alignment.md", "pipelines/2-work/spec.md"]) {
     const dest = path.join(dir, rel);
     fs.mkdirSync(path.dirname(dest), { recursive: true });
@@ -159,6 +161,16 @@ test("toy mission end-to-end: parallel frontier, reject->repair->admit, notes, d
 
   const validator = scriptedValidator(new Set(["n2"]));
   const lines: string[] = [];
+  const skillName = "mission-procedure";
+  const draft = path.join(skillDraftsDir(repo, P), skillName);
+  fs.mkdirSync(draft, { recursive: true });
+  fs.writeFileSync(path.join(draft, "SKILL.md"), [
+    "---", `name: ${skillName}`,
+    "description: Check toy mission procedures. Use when testing wave admission.",
+    "---", "", `# ${skillName}`, "", "## When to use", "", "During the toy mission.",
+    "", "## Steps", "", "1. Run the fixture verifier.",
+    "", "## Verify", "", "```bash", "true", "```", "",
+  ].join("\n"));
 
   const code = await runMissionLoop({
     repoRoot: repo, paper: P, maxWorkers: 4, maxWaves: 6,
@@ -193,6 +205,13 @@ test("toy mission end-to-end: parallel frontier, reject->repair->admit, notes, d
   const halt = journal.ofType("halt");
   assert.equal(halt[halt.length - 1].reason, "mission_complete");
   assert.equal(halt[halt.length - 1].wave, 4, "wave 3 is the terminal render; wave 4 halts");
+  assert.deepEqual(journal.ofType("skills_harvested"), [
+    { type: "skills_harvested", wave: 1, promoted: [skillName], rejected: [] },
+  ], "the draft is admitted once; empty harvests in later waves stay silent");
+  assert.ok(lines.includes(`wave 1: skills promoted=${skillName} rejected=0`));
+  const skillPath = `.claude/skills/${skillName}/SKILL.md`;
+  assert.ok(fs.existsSync(path.join(repo, skillPath)));
+  assert.ok(fs.existsSync(path.join(skillDraftsDir(repo, P), ".promoted", `${skillName}-w1`, "SKILL.md")));
 
   // --- outcomes were ledger-diff-derived ----------------------------------
   const done = journal.ofType("worker_done").map(m => [m.report.node, m.report.outcome, m.wave]);
@@ -241,6 +260,12 @@ test("toy mission end-to-end: parallel frontier, reject->repair->admit, notes, d
   assert.ok(commits.length >= 2, `expected >=2 wave commits, got ${commits.length}`);
   const gitLog = execFileSync("git", ["-C", repo, "log", "--format=%s"], { encoding: "utf-8" });
   assert.match(gitLog, /notes\(wave\): paper_arxiv-9999.99999 wave 1/);
+  const waveOne = commits.find(c => c.wave === 1);
+  assert.ok(waveOne, "wave 1 must commit its admitted skill");
+  const waveFiles = execFileSync("git", ["-C", repo, "log", "-1", "--name-only", "--format=", waveOne.sha],
+    { encoding: "utf-8" }).trim().split("\n");
+  assert.ok(waveFiles.includes(skillPath), "the wave commit carries the admitted skill");
+  assert.ok(waveFiles.includes(".claude/skills/INDEX.md"), "the generated index is committed with the skill");
   const dirty = execFileSync("git", ["-C", repo, "status", "--porcelain"], { encoding: "utf-8" });
   assert.equal(dirty.trim(), "", "working tree must be clean after the mission");
 });

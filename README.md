@@ -96,7 +96,9 @@ orchestrator/  TypeScript runtime: scheduler, workers, validators, observer,
                digest cadence
 notes/         mission-state templates
 tests/         pytest suite for the Python infrastructure
-.claude/       session-start kernel injection + subagent stop reminder
+.claude/       session-start kernel injection + subagent stop reminder;
+               skills/ — 33 loadable skills + the generated INDEX.md
+AGENTS.md      entry point for non-Claude agents (Codex CLI, SDK sessions)
 ```
 
 Research itself happens in *consumer repos* that adopt this methodology. A
@@ -203,6 +205,23 @@ source of truth for its area.
 | [`_common/hooks/README.md`](_common/hooks/README.md) | The enforced commit-message gate |
 | [`notes/multi_timescale_tracking_template.md`](notes/multi_timescale_tracking_template.md) | The three-note memory hierarchy |
 | [`tests/README.md`](tests/README.md) | Test coverage map |
+| [`.claude/skills/INDEX.md`](.claude/skills/INDEX.md) | Generated index of the loadable skills — one procedure per moment of the loop (start with `chandra-orient`) |
+| [`AGENTS.md`](AGENTS.md) | What every coding agent must read and obey, in any client |
+
+## Skills
+
+Every stage, ledger, gate, and runtime procedure is a loadable skill under
+`.claude/skills/<name>/SKILL.md`. Claude Code loads them natively; Codex-style
+agents reach them through `AGENTS.md`; any client can inject
+`python3 _common/skill_registry.py briefing` or run
+`bash .claude/inject_infra.sh --with-skills` at session start. Skills are tools,
+so they pass a gate: `python3 _common/skill_registry.py validate --exec` checks
+the frontmatter, rejects dangling references, and executes each skill's
+`## Verify` block (the test suite does the same for every shipped skill).
+Missions autowrite skills — workers draft them in the runtime dir and each wave
+harvests the drafts through that gate. The repo also runs its own methodology on
+itself: the `software` domain records infra work in the ledgers under
+`results/ledgers/*/paper_self/` (see the `self-optimize` skill).
 
 ## Contributing
 

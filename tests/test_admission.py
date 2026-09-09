@@ -181,3 +181,19 @@ def test_no_policy_records_role_but_never_rejects(tmp_path, monkeypatch):
     write_evidence(tmp_path)
     written = rdb.append_row(valid_result_row(), repo_root=tmp_path)
     assert written["actor_role"] == "worker"
+
+
+# --- the verifier is not the worker: no role leaks into the verification run ---
+
+def test_verification_command_runs_without_the_appenders_role(tmp_path, monkeypatch):
+    """Found by self-hosting: a worker's CHANDRA_ROLE leaked into the executed
+    verification command, so a test suite that asserts the strict policy
+    REJECTS roleless appends saw a role and admitted them. The verifier must
+    run with the appender's role scrubbed from its environment."""
+    strict_policy(tmp_path)
+    monkeypatch.setenv("CHANDRA_ROLE", "worker")
+    row = valid_result_row(evidence="inline certificate",
+                           verification={"command": 'test -z "${CHANDRA_ROLE:-}"'})
+    written = rdb.append_row(row, repo_root=tmp_path)
+    assert written["actor_role"] == "worker"              # the ROW keeps the provenance
+    assert written["verifier_result"]["execution"]["exit_code"] == 0

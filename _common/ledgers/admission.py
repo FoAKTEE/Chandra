@@ -13,7 +13,8 @@ Gates:
     command that fails belongs in error-database, not here). The observed
     outcome (exit code, output sha256, output tail, duration) is recorded on
     the row, so the ledger carries what the verifier SAW, not what the agent
-    claimed.
+    claimed. The command runs WITHOUT the appender's CHANDRA_ROLE in its
+    environment — the verifier is not the worker.
   * evidence resolution — evidence naming an existing file is content-
     addressed into `evidence_sha256`. Strict statuses (result `checked`,
     knowledge `solid`) REQUIRE evidence in one of three verifiable forms:
@@ -117,10 +118,14 @@ def run_verification(spec: Any, repo_root: str | Path) -> dict[str, Any]:
         except Exception:
             pass
 
+    # The verifier is not the worker: the appender's delegated role must not
+    # reach the command it runs, or a verifier that checks the role policy
+    # (e.g. this repo's own test suite) sees the worker's privileges.
+    env = {k: v for k, v in os.environ.items() if k != ROLE_ENV_VAR}
     try:
         proc = subprocess.run(spec["command"], shell=True, cwd=str(cwd),
                               capture_output=True, text=True, timeout=timeout,
-                              preexec_fn=_limits)
+                              preexec_fn=_limits, env=env)
     except subprocess.TimeoutExpired:
         raise AdmissionError(f"verification command timed out after {timeout}s: {spec['command']!r}")
     combined = (proc.stdout or "") + (proc.stderr or "")

@@ -241,3 +241,8 @@ ok 79 - the refuter is mandatory: empty findings abort before any judge/ledger a
 ✓ skill-load
 2 skills checked, 2 ok, 0 rejected
 ",2026-09-09T01:25:22+00:00
+2026-09-09T01:26:00.932086+00:00,self,self::docs-index,2,S7,23c8bf7,software,solid,"INDEX.md / README / _common README describe skills, the software domain, and cross-model runners",23c8bf7,"[""self::skills-ledgers"", ""self::skills-stages"", ""self::skills-writing-commit"", ""self::skills-code-quality"", ""self::meta-skills-2""]",worker,tests_failed,True,0,0,,33af3050534c5d0671607ddca16aaba6f5b53daa54da9de3a4d393214fb2b385,python3 -m pytest tests/test_skill_loading.py -q && python3 _common/skill_registry.py validate --root . chandra-orient skill-load,,300,python3 -m pytest tests/test_skill_loading.py -q && python3 _common/skill_registry.py validate --root . chandra-orient skill-load,0.748,0,d132f8d33bda4dfad5cffb86c025db29ef924f6efe2d4cb780ba533df6374284,"...                                                                      [100%]
+✓ chandra-orient
+✓ skill-load
+2 skills checked, 2 ok, 0 rejected
+",2026-09-09T01:26:00+00:00

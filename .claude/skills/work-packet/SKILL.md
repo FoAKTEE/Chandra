@@ -107,6 +107,10 @@ description: Work a leased stage-2 packet continuously, retain a trial WAL throu
    Register any missing prerequisite nodes before results that name them. Settle claims
    with existing `result_ref` and obligations with existing `discharged_by`; promote nodes
    to solid only after closure gates pass and predecessors are solid, in topological order.
+   A batch first runs every row's `verification.command` outside the ledger lock, in order,
+   then takes the repository lock once and re-validates each row's dependencies and
+   predecessors against the current files before appending (`_common/ledgers/txn.py`);
+   never call the append CLIs from inside a process that already holds that lock.
    Batches can partially land: reconcile receipts/history before retrying; result and error
    batches do not deduplicate. Claims/knowledge dedup ignores metadata-only changes; use
    their `--force` only for an intentional such amendment. Those two implementations still

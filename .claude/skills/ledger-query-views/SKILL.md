@@ -42,9 +42,14 @@ description: Query current ledger state or append history, check hash chains, an
    canonical wins; neither queries nor verify-chains merge the shadowed copy.
    Do not create an empty canonical directory over legacy data to refresh a view.
    Hashes cover row content plus the preceding hash. An unhashed legacy prefix
-   is tolerated; an unhashed row after hashed history breaks the chain. An intact
-   chain does not prove semantic admission, unchanged artifact bytes, or absence
-   of tail truncation without an independently retained head/count.
+   is tolerated; an unhashed row after hashed history breaks the chain. Every append
+   holds the repository lock at `results/ledgers/.lock` (`_common/ledgers/txn.py`;
+   timeout `CHANDRA_LOCK_TIMEOUT_S`) and readers take it shared, so a query never sees a
+   half-written row: an incomplete final line is ignored with a stderr warning, and
+   `verify-chains` reports it as `incomplete tail (crash mid-write)`, distinct from a
+   hash mismatch; the next append truncates it under the lock. An intact chain still
+   does not prove semantic admission, unchanged artifact bytes, or absence of a
+   deleted whole-row tail without an independently retained head/count.
 
 3. Query current state, or add --with-history for earlier versions:
    ```bash

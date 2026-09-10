@@ -255,3 +255,132 @@ run 0: rows=100 verify={'ok': False, 'breaks': [{'db': 'error', 'paper': 'P', 'o
 run 1: rows=100 verify={'ok': False, 'breaks': [{'db': 'error', 'paper': 'P', 'ok': False, 'rows': 100, 'hashed': 65, 'break_at': 65, 'reason': 'hash mismatch (edited, dropped, or reordered row)'}]}
 run 2: rows=100 verify={'ok': False, 'breaks': [{'db': 'error', 'paper': 'P', 'ok': False, 'rows': 100, 'hashed': 5, 'break_at': 5, 'reason': 'hash mismatch (edited, dropped, or reordered row)'}]}
 ",2026-09-09T08:42:50+00:00
+2026-09-10T21:05:24.543649+00:00,self,self::kb-ledger-transaction,1,KB1,3a7fa39,software,hypothesis,"repository transaction lock: verification outside, read-set re-validation + sequence allocation + fsync append inside; readers fail closed on incomplete tails",,"[""self::kb-redesign-note""]",worker,,,,,,d9638b84a92f210625a8f397e7a4a542184244c06ae7d7ff45a751f5e66d47da,,,,,,,,,
+2026-09-10T21:05:51.497699+00:00,self,self::kb-ledger-transaction,2,KB1,3a7fa39,software,solid,"repository transaction lock: verification outside, read-set re-validation + sequence allocation + fsync append inside; readers fail closed on incomplete tails",3a7fa39,"[""self::kb-redesign-note""]",validator,tests_failed,True,0,0,"implemented by a GPT-6 (gpt-6-astra, effort max) worker with a test-first contract; reviewed, verified in an isolated worktree, and adjudicated by the orchestrating session",3cd41fe20dee41fe8775d1b09974f9b67f18ef8e459f4d990944ccf02d2f3e7c,python3 -m pytest tests/test_ledger_transaction.py tests/test_hash_chain.py -q && python3 notes/kb_redesign/concurrent.py,,900,python3 -m pytest tests/test_ledger_transaction.py tests/test_hash_chain.py -q && python3 notes/kb_redesign/concurrent.py,26.879,0,441d64ae5bd7f3bcc09fc5d55fe78c45e47952f2e357e7c6e70c71a754d7f350,".........................................................                [100%]
+run 0: rows=100 verify={'ok': True, 'breaks': []}
+run 1: rows=100 verify={'ok': True, 'breaks': []}
+run 2: rows=100 verify={'ok': True, 'breaks': []}
+",2026-09-10T21:05:24+00:00
+2026-09-10T21:05:51.578292+00:00,self,self::kb-integrity-before-decisions,1,KB2,3a7fa39,software,hypothesis,"runtime preflight (chains + readability) before scheduling, decisions, digest, and every terminal exit; readers throw, exit 9 ledger_unreadable",,"[""self::kb-redesign-note""]",worker,,,,,,f851dd7c08ca8eba3dd2e8d047fe2cef57d054b14e39728c048940cf83cb06a4,,,,,,,,,
+2026-09-10T21:06:09.851685+00:00,self,self::kb-integrity-before-decisions,2,KB2,3a7fa39,software,solid,"runtime preflight (chains + readability) before scheduling, decisions, digest, and every terminal exit; readers throw, exit 9 ledger_unreadable",2b6bbbc,"[""self::kb-redesign-note""]",validator,tests_failed,True,0,0,"implemented by a GPT-6 (gpt-6-astra, effort max) worker with a test-first contract; reviewed, verified in an isolated worktree, and adjudicated by the orchestrating session",244595ff3300b94006b7481a93115d5eb7e85a02a8f45d1231303dfc69921e66,npx tsc -p . && env -u CHANDRA_ROLE node --test dist/test/integrity.test.js,orchestrator,900,npx tsc -p . && env -u CHANDRA_ROLE node --test dist/test/integrity.test.js,18.2,0,941323d7409adf2958c47abb01b8d4ceff12cd70ee22b3d7f69e8dde2ab713c7,"agnostics when Python is unavailable
+  ---
+  duration_ms: 298.220525
+  ...
+# Subtest: mission_complete rechecks ledgers after readiness probes
+ok 16 - mission_complete rechecks ledgers after readiness probes
+  ---
+  duration_ms: 734.990177
+  ...
+# Subtest: no_ready_jobs rechecks ledgers after readiness probes
+ok 17 - no_ready_jobs rechecks ledgers after readiness probes
+  ---
+  duration_ms: 727.694995
+  ...
+# Subtest: human_pause cannot bypass integrity verification
+ok 18 - human_pause cannot bypass integrity verification
+  ---
+  duration_ms: 229.749583
+  ...
+# Subtest: zero_waves cannot bypass integrity verification
+ok 19 - zero_waves cannot bypass integrity verification
+  ---
+  duration_ms: 229.600644
+  ...
+# Subtest: digest checks corruption introduced by a worker before publishing a decision
+ok 20 - digest checks corruption introduced by a worker before publishing a decision
+  ---
+  duration_ms: 1052.381485
+  ...
+# Subtest: gate_halt checks corruption introduced by a worker before publishing a decision
+ok 21 - gate_halt checks corruption introduced by a worker before publishing a decision
+  ---
+  duration_ms: 1023.625327
+  ...
+# Subtest: dry_run rechecks ledgers after a commit hook corrupts claims
+ok 22 - dry_run rechecks ledgers after a commit hook corrupts claims
+  ---
+  duration_ms: 1392.214778
+  ...
+# Subtest: max_waves rechecks ledgers after a commit hook corrupts claims
+ok 23 - max_waves rechecks ledgers after a commit hook corrupts claims
+  ---
+  duration_ms: 1358.452312
+  ...
+# Subtest: next_wave rechecks ledgers after a commit hook corrupts claims
+ok 24 - next_wave rechecks ledgers after a commit hook corrupts claims
+  ---
+  duration_ms: 1365.809944
+  ...
+# Subtest: commit_failure rechecks ledgers after a commit hook corrupts claims
+ok 25 - commit_failure rechecks ledgers after a commit hook corrupts claims
+  ---
+  duration_ms: 1381.999154
+  ...
+1..25
+# tests 25
+# suites 0
+# pass 25
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 14944.236338
+",2026-09-10T21:05:51+00:00
+2026-09-10T21:06:09.926513+00:00,self,self::kb-validator-binding,1,KB3,3a7fa39,software,hypothesis,adversarial validation frozen and hash-bound to the reviewed submission; evidence paths contained; pack re-audited per phase; blank judge reasons reject; full reviews retained,,"[""self::kb-redesign-note""]",worker,,,,,,ebe3da8f826eba442429a2da2e87fb4bc5e42d7a6240b63d66e912ed63043650,,,,,,,,,
+2026-09-10T21:06:16.067746+00:00,self,self::kb-validator-binding,2,KB3,3a7fa39,software,solid,adversarial validation frozen and hash-bound to the reviewed submission; evidence paths contained; pack re-audited per phase; blank judge reasons reject; full reviews retained,9e99de9,"[""self::kb-redesign-note""]",validator,tests_failed,True,0,0,"implemented by a GPT-6 (gpt-6-astra, effort max) worker with a test-first contract; reviewed, verified in an isolated worktree, and adjudicated by the orchestrating session",3b8b76529ee15ade84567b24f7ffbd8f07519c090be7fb46bf7a73724acaec7d,npx tsc -p . && env -u CHANDRA_ROLE node --test dist/test/validator_binding.test.js,orchestrator,900,npx tsc -p . && env -u CHANDRA_ROLE node --test dist/test/validator_binding.test.js,6.065,0,346c9d856290a4b880403d613399a1c76d62886526b05754a4815a019924cccf,"
+  ...
+# Subtest: binding (g): number judge reasons fail closed with the specified reason
+ok 16 - binding (g): number judge reasons fail closed with the specified reason
+  ---
+  duration_ms: 0.131029
+  ...
+# Subtest: binding (g): object judge reasons fail closed with the specified reason
+ok 17 - binding (g): object judge reasons fail closed with the specified reason
+  ---
+  duration_ms: 0.11084
+  ...
+# Subtest: binding (g): empty judge reasons fail closed with the specified reason
+ok 18 - binding (g): empty judge reasons fail closed with the specified reason
+  ---
+  duration_ms: 0.105109
+  ...
+# Subtest: binding (g): blank judge reasons fail closed with the specified reason
+ok 19 - binding (g): blank judge reasons fail closed with the specified reason
+  ---
+  duration_ms: 0.2505
+  ...
+# Subtest: binding (g): an admit without reasons creates a repair obligation instead of a result
+ok 20 - binding (g): an admit without reasons creates a repair obligation instead of a result
+  ---
+  duration_ms: 199.555769
+  ...
+# Subtest: binding (h): admit retains the full review, candidate hash, row, and journal link
+ok 21 - binding (h): admit retains the full review, candidate hash, row, and journal link
+  ---
+  duration_ms: 143.454147
+  ...
+# Subtest: binding (h): reject retains the full review, candidate hash, row, and journal link
+ok 22 - binding (h): reject retains the full review, candidate hash, row, and journal link
+  ---
+  duration_ms: 137.583742
+  ...
+# Subtest: candidate hashes ignore object key order and bind nested submission fields
+ok 23 - candidate hashes ignore object key order and bind nested submission fields
+  ---
+  duration_ms: 10.213585
+  ...
+# Subtest: a failed judge process retains its already-written raw output without admitting
+ok 24 - a failed judge process retains its already-written raw output without admitting
+  ---
+  duration_ms: 153.670261
+  ...
+1..24
+# tests 24
+# suites 0
+# pass 24
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 2881.627703
+",2026-09-10T21:06:10+00:00

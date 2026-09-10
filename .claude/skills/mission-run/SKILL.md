@@ -140,7 +140,12 @@ description: Configure, plan, run, and steer a mission using the shipped orchest
     | 6 | Wave commit rejected/failed; inspect hook output and staged changes, resolve the concrete failure. |
     | 7 | Human PAUSE; read steering, remove the intentional pause, rerun. |
     | 8 | Broken ledger chain; preserve state, inspect the chain report, reconcile from trusted history through the proper repair process. |
+    | 9 | A ledger could not be read (torn line, missing interpreter, output over the 16 MiB bridge buffer); the journal's `preflight` entry carries the CLI diagnostic; repair the read, never the rows. |
 
+    The loop verifies chains and readability (`Ledgers.preflight`) at startup, at every wave
+    boundary, before the gate decision and the digest, and before every terminal return; a
+    failure halts with 8 or 9 before any `mission_complete`. `CHANDRA_PYTHON` selects the
+    interpreter the bridge calls (default `python3`).
     Inspect chains with the real Python command:
     ```bash
     python3 _common/contract.py verify-chains --repo-root "$CONSUMER"
@@ -163,6 +168,7 @@ main = Path('orchestrator/src/main.ts').read_text()
 flags = set(re.findall(r'get\("(--[a-z-]+)"', main)) | set(re.findall(r'argv.includes\("(--[a-z-]+)"', main))
 assert flags == {'--repo-root', '--paper', '--max-workers', '--max-waves', '--dry-run'}
 assert {0, 2, 3, 4, 6, 7, 8} <= {int(n) for n in re.findall(r'return (\d+);', main)}
+assert 'ledger_unreadable' in main and 'code: 9' in main and 'preflight' in main
 assert 'decideGate(gateState, DEFAULT_BUDGETS)' in main
 spec = Path('orchestrator/src/missionspec.ts').read_text()
 for key in ['paper', 'maxWorkers', 'maxWaves', 'packetSize', 'digestThreshold', 'noProgressLimit', 'maxWallSeconds', 'models', 'worker', 'refuter', 'judge', 'observer', 'jobs', 'codex']:

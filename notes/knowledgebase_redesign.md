@@ -566,3 +566,24 @@ narrowed to what facts can check.
 
 **Disagreement retained.** G-D: B on correctness grounds; R1/R2: measure after
 A. Recorded in §5 and §8 Q7 for the owner.
+
+## 11. Implementation status (2026-09-10)
+
+Stage 0 of §6 is implemented on branch `GUI`, each node by a GPT-6 (gpt-6-astra,
+effort max) worker under a test-first contract, verified alone in an isolated
+worktree at HEAD, landed as its own revertible commit, promoted through the gate
+with its test suite executed at append, and its obligations discharged:
+
+| node | commits | new tests | obligations discharged |
+|---|---|---|---|
+| `kb::validator-binding` | 9e99de9 (+ docs 58c5d00) | 24 | kb-validator-submission-binding |
+| `kb::integrity-before-decisions` | 2b6bbbc (+ docs 78f8604) | 25 | kb-integrity-before-decisions, kb-claims-fail-loud |
+| `kb::ledger-transaction` | 3a7fa39 (+ docs f12ace4) | 53 | kb-ledger-lock |
+| `kb::registry-candidate-binding` | 3c69d55 (seven skills), d39ee93 (registry, receipts) (+ docs 3882e84) | 32 | kb-registry-candidate-binding, kb-registry-first-block-only, kb-registry-unadmitted-discovery |
+
+Consequences for §2: P11, P17 (within one repository lock), P15, P24, P26, and
+P30 are closed on this branch; `notes/kb_redesign/concurrent.py` now passes
+(3/3). Suites after stage 0: pytest 297, orchestrator 128, skills 33/33
+admitted. Still open: the frontier node (`kb::frontier-ownership-repair`,
+ordered after `kb::identity-revisions`), and everything in stages 1–3; 45
+obligations remain, one blocking (`kb-frontier-crosspaper-obligations`).

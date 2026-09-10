@@ -57,10 +57,10 @@ disable-model-invocation: true
 set -euo pipefail
 test -f notes/pua_skill.md
 PYTHONDONTWRITEBYTECODE=1 python3 - <<'PY'
-import re
+import os, re
 from pathlib import Path
 from _common.skills.skill_registry import parse_frontmatter, SkillInfo
-path = Path('.claude/skills/pua/SKILL.md')
+path = Path(os.environ['CLAUDE_SKILL_DIR']) / 'SKILL.md'
 fm, body = parse_frontmatter(path.read_text())
 assert set(fm) == {'name', 'description', 'disable-model-invocation'}
 assert fm['name'] == 'pua' and fm['disable-model-invocation'] is True

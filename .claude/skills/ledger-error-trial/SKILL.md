@@ -131,7 +131,7 @@ assert all(repr(s) in schema for s in (*db.DOMAINS, *db.CHANGE_TYPES, *db.PASS_F
 tags = subprocess.check_output(['python3', cli, 'list-tags', '--domain', 'software'], text=True)
 assert 'uncategorized_software' in tags and 'test_failure' in tags
 subprocess.run(['python3', cli, 'describe-tag', '--domain', 'software', '--tag', 'test_failure'], check=True, stdout=subprocess.DEVNULL)
-text = Path('.claude/skills/ledger-error-trial/SKILL.md').read_text()
+text = (Path(os.environ['CLAUDE_SKILL_DIR']) / 'SKILL.md').read_text()
 fence = chr(96) * 3
 examples = [json.loads(s) for s in re.findall(fence + r'json\n(.*?)\n\s*' + fence, text, re.S)]
 row, failure = examples

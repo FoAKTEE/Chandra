@@ -126,7 +126,7 @@ for args in [[], *[[s] for s in ('schema', 'describe-fields', 'append', 'append-
 subprocess.run(['python3', '_common/ledgers/result_database.py', 'schema'], check=True, stdout=subprocess.DEVNULL)
 schema = subprocess.check_output(['python3', cli, 'schema'], text=True)
 assert all(repr(s) in schema for states in db.STATUSES_BY_KIND.values() for s in states)
-text = Path('.claude/skills/ledger-claims/SKILL.md').read_text()
+text = (Path(os.environ['CLAUDE_SKILL_DIR']) / 'SKILL.md').read_text()
 rows = json.loads(text.split(chr(96) * 3 + 'json\n')[1].split(chr(96) * 3)[0])
 assert all(db.REQUIRED_FIELDS <= r.keys() for r in rows)
 os.environ['CHANDRA_ROLE'] = 'worker'

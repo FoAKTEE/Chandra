@@ -121,7 +121,7 @@ schema = subprocess.check_output(['python3', cli, 'schema'], text=True)
 assert all(repr(s) in schema for s in (*db.STATUSES, *db.DOMAINS))
 assert set(db.EXIST_STATUSES) == {'solid', 'preliminary', 'hypothesis'}
 assert set(db.NONEXIST_STATUSES) == {'blocking', 'future'}
-text = Path('.claude/skills/ledger-knowledge-node/SKILL.md').read_text()
+text = (Path(os.environ['CLAUDE_SKILL_DIR']) / 'SKILL.md').read_text()
 row = json.loads(text.split(chr(96) * 3 + 'json\n')[1].split(chr(96) * 3)[0])
 assert db.REQUIRED_FIELDS <= row.keys()
 os.environ['CHANDRA_ROLE'] = 'worker'

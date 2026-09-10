@@ -145,11 +145,11 @@ python3 _common/ledgers/error_database.py describe-domain --domain software | gr
 scratch=$(mktemp -d /tmp/chandra-quality-review.XXXXXX)
 trap 'rm -rf "$scratch"' EXIT
 python3 - "$scratch" <<'PY'
-import json, re, sys
+import json, os, re, sys
 from pathlib import Path
 from _common.ledgers import error_database as ed
 root = Path(sys.argv[1])
-body = Path('.claude/skills/code-quality-review/SKILL.md').read_text()
+body = (Path(os.environ['CLAUDE_SKILL_DIR']) / 'SKILL.md').read_text()
 row = json.loads(re.search(r'`{3}json\s*\n(.*?)\n\s*`{3}', body, re.S).group(1))
 ed.validate(row)
 assert row['domain'] == 'software' and row['failure_mode'] in ed.FAILURE_MODES_SOFTWARE

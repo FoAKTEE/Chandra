@@ -114,7 +114,7 @@ for args in [[], *[[s] for s in ('render', 'merge', 'duplicates', 'progress', 'n
     subprocess.run(['python3', cli, *args, '--help'], check=True, stdout=subprocess.DEVNULL)
 for sub in ('schema', 'describe-fields', 'append-batch', 'query'):
     subprocess.run(['python3', '_common/ledgers/knowledge_database.py', sub, '--help'], check=True, stdout=subprocess.DEVNULL)
-text = Path('.claude/skills/dag-mermaid/SKILL.md').read_text()
+text = (Path(os.environ['CLAUDE_SKILL_DIR']) / 'SKILL.md').read_text()
 row = json.loads(text.split(chr(96) * 3 + 'json\n')[1].split(chr(96) * 3)[0])
 assert kdb.REQUIRED_FIELDS <= row.keys()
 os.environ['CHANDRA_ROLE'] = 'worker'

@@ -43,16 +43,22 @@ description: Submit one candidate to independent refuter and judge sessions, the
    Include the certificate, verifier source/output, and any definitions or source excerpts
    needed to assess this claim in `evidencePaths`. The executable command later runs in the
    consumer repo, not the pack, so its files must also exist there. A verdict field alone
-   does not execute verification. Retain `node_ids` for scheduler outcome attribution.
+   does not execute verification. `node_ids` must be a non-empty array containing the
+   candidate `node`, and `resultRow.paper` / `resultRow.claim` must equal the candidate's
+   `paper` / `claim`: the API freezes and hashes the submission at entry and rejects any
+   mismatch (`ValidationBindingError`) before a pack is built or a reviewer runs.
 3. Check the pack boundary. `ALWAYS_PACKED` contains exactly `alignment.md`,
    `_common/contracts/research_admission_contract.md`, and `pipelines/2-work/spec.md`.
    The builder adds only the evidence allowlist, generated `CLAIM.md` containing the claim
    and proposed row, and `MANIFEST.json`; hashed entries include `CLAIM.md` but not the
    manifest itself. The fresh directory is under `/tmp/chandra-pack-<suffix>/`.
    The defender transcript, unrelated nodes, and remaining repo files are physically absent
-   from that directory. `checkIsolation` rejects unmanifested, changed, or missing files.
+   from that directory. `checkIsolation` rejects unmanifested, changed, or missing files and
+   is re-run after construction, after refutation, and after judging: any change aborts the
+   adjudication with `pack_tampered` and no verdict. Evidence paths must be relative, contain
+   no `..` segment, and resolve (realpath) inside the repository; symlink escapes are rejected.
    Do not overclaim host isolation: the runner sets cwd and permits Read/Grep/Glob/Bash;
-   it installs no filesystem sandbox, and the audit checks pack contents only, before sessions.
+   it installs no filesystem sandbox, and the audit checks pack contents only.
    For a requirement that validators cannot access anything else on the host, supply a
    `ValidatorRunner` backed by an enforced filesystem boundary; this SDK runner alone is insufficient.
 4. Require refutation before judging. Nonempty findings are mandatory, including specific
@@ -73,7 +79,8 @@ description: Submit one candidate to independent refuter and judge sessions, the
 5. Give the judge a fresh session with the pack and refuter findings, without the defender's
    conversation. Require exactly one JSON object with string reasons:
    `{"verdict":"admit","reasons":"One paragraph explaining why the evidence survives refutation."}`
-   or the same shape with `"verdict":"reject"`. Unparseable output becomes rejection;
+   or the same shape with `"verdict":"reject"`. Unparseable output, or an admit whose
+   `reasons` is missing or blank, becomes a rejection (`judge gave no reasons`);
    empty refuter findings abort before judging or appending.
 6. Run one submission manually after building the existing orchestrator per
    `.claude/skills/mission-run/SKILL.md`. From the consumer root, set `SUBMISSION` to the
@@ -133,7 +140,12 @@ description: Submit one candidate to independent refuter and judge sessions, the
    The validator API itself only appends the result or repair obligation; it does not refresh
    claim views or promote nodes. On exceptions or gate rejection, record the actual failed
    gate, observed error, root cause evidence, and fix hypothesis as an error trial. The pack
-   is removed in the normal adjudication cleanup; keep durable evidence in consumer outputs.
+   is removed in the normal adjudication cleanup, but the full review — candidate and its
+   hash, pack manifest, complete refuter findings, raw judge output, verdict, the appended row
+   or repair obligation, timestamps — is retained at
+   `$CHANDRA_RUNTIME/paper_<P>/validation/<node>-w<N>.json` (`reviewPath()` in
+   `orchestrator/src/validator.ts`); the journal's `validation_verdict` carries
+   `candidateHash` and `reviewPath`. Keep durable evidence in consumer outputs.
 
 ## Verify
 

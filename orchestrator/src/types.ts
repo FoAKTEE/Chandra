@@ -82,7 +82,7 @@ export type Message =
   | { type: "task_assigned"; wave: number; node: string; runner: string }
   | { type: "worker_done"; wave: number; report: WorkerReport }
   | { type: "wave_finished"; wave: number; admitted: number; rejected: number; failed: number; noProgress: number }
-  | { type: "validation_verdict"; wave: number; node: string; verdict: "admit" | "reject"; refuterFindings: string }
+  | { type: "validation_verdict"; wave: number; node: string; verdict: "admit" | "reject"; refuterFindings: string; candidateHash?: string; reviewPath?: string }
   | { type: "memory_pruned"; wave: number; researchStateBytes: number }
   | { type: "skills_harvested"; wave: number; promoted: string[]; rejected: { name: string; errors: string[] }[] }
   | { type: "digest_emitted"; afterWindows: number; wave: number; path: string }

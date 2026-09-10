@@ -253,7 +253,8 @@ test("adjudicateCandidate selects validators from mission.json and still execute
     resultRow: { paper: P, result_id: "r1", name: "boundary", working_context: "toy",
       claim: "boundary = 0", evidence_type: "symbolic_derivation", evidence: "evidence.txt",
       verifier_result: { verdict: "pass" }, dependencies: [], assumptions: [], status: "checked",
-      provenance: "validator-test", open_obligations: [], verification: { command: "true" } },
+      provenance: "validator-test", open_obligations: [], verification: { command: "true" },
+      node_ids: ["P::n1"] },
   };
   const deps = { repoRoot: f.repo, ledgers, journal: new Journal(path.join(f.runtime, "validation.jsonl")) };
   assert.equal((await adjudicateCandidate(candidate, deps)).outcome, "admitted");

@@ -56,6 +56,7 @@ function candidate(over: Partial<CandidateSubmission> = {}): CandidateSubmission
       evidence_type: "symbolic_derivation", evidence: "artifacts/out.txt",
       verifier_result: { verdict: "pass" }, dependencies: [], assumptions: [],
       status: "checked", provenance: "validator-test", open_obligations: [],
+      node_ids: [over.node ?? "P::n1"],
     },
     ...over,
   };

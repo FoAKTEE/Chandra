@@ -10,7 +10,7 @@ import { maybeEmitDigest } from "./digest.js";
 import { DEFAULT_BUDGETS, advanceGate, decideGate, gateSignal, type GateState } from "./gate.js";
 import { commitGateInstalled, commitWave, isGitRepo } from "./gitops.js";
 import { Journal } from "./journal.js";
-import { Ledgers } from "./ledger.js";
+import { LedgerError, Ledgers, type PreflightReport } from "./ledger.js";
 import { loadMissionSpec, parseModelSpec, readHumanSignals, type MissionSpec } from "./missionspec.js";
 import { SdkObserverRunner, TruncatingObserver, notesLayout, runObserver, waveHistory } from "./observer.js";
 import { runtimeDir } from "./runtime.js";
@@ -67,13 +67,29 @@ export function buildRunners(spec: MissionSpec | null, dryRun: boolean):
 export async function main(argv: string[]): Promise<number> {
   const args = parseArgs(argv);
   const ledgers = new Ledgers(args.repoRoot);
-  const mission = buildMission(args.paper,
-    await ledgers.knowledge(args.paper), await ledgers.claims(args.paper));
 
   if (args.cmd === "plan") {
+    const preflight = await ledgers.preflight(args.paper);
+    let mission = buildMission(args.paper, [], []);
+    if (preflight.ok) {
+      try {
+        mission = buildMission(args.paper,
+          await ledgers.knowledge(args.paper), await ledgers.claims(args.paper));
+      } catch (e) {
+        if (!(e instanceof LedgerError)) throw e;
+        preflight.ok = false;
+        preflight.unreadable.push(e.message);
+      }
+    }
+    const failure = preflightFailure(preflight);
+    if (failure) {
+      process.stdout.write(JSON.stringify({ paper: args.paper, preflight }, null, 2) + "\n");
+      return failure.code;
+    }
     const ready = readyFrontier(mission);
     process.stdout.write(JSON.stringify({
       paper: args.paper,
+      preflight,
       nodes: mission.size,
       solid: [...mission.values()].filter(n => n.status === "solid").length,
       complete: missionComplete(mission),
@@ -94,6 +110,15 @@ export async function main(argv: string[]): Promise<number> {
     ...buildRunners(spec, args.dryRun),
     dryRun: args.dryRun,
   });
+}
+
+function preflightFailure(report: PreflightReport): { code: number; reason: string } | null {
+  if (report.ok) return null;
+  // An unreadable ledger can also break verification (e.g. a torn JSON line).
+  // Preserve that operational diagnostic instead of misclassifying it as tampering.
+  return report.unreadable.length > 0
+    ? { code: 9, reason: `ledger_unreadable: ${report.unreadable.join("; ")}` }
+    : { code: 8, reason: `ledger_tampered: ${JSON.stringify(report.breaks)}` };
 }
 
 export interface MissionLoopDeps {
@@ -137,126 +162,168 @@ export async function runMissionLoop(deps: MissionLoopDeps): Promise<number> {
   let gateState: GateState | null = null;
   let packetSize = deps.packetSize ?? 4;
 
-  const initial = buildMission(paper, await ledgers.knowledge(paper), await ledgers.claims(paper));
-  journal.append({
-    type: "mission_loaded", paper, nodes: initial.size,
-    solid: [...initial.values()].filter(n => n.status === "solid").length,
-  });
-
-  const probes = deps.probes ?? cliProbes(repoRoot);
-  const jobRunners = {
-    decompose: deps.jobRunners?.decompose ?? new SdkJobRunner(),
-    acquire: deps.jobRunners?.acquire ?? new SdkJobRunner(),
-    "write-refresh": deps.jobRunners?.["write-refresh"] ?? new SdkJobRunner(),
+  const recordPreflight = (wave: number, report: PreflightReport): number | null => {
+    journal.append({ type: "preflight", wave, ok: report.ok,
+      breaks: report.breaks.length, unreadable: report.unreadable });
+    const failure = preflightFailure(report);
+    if (!failure) return null;
+    journal.append({ type: "halt", reason: failure.reason, wave });
+    log(`halt: ${failure.reason}`);
+    return failure.code;
+  };
+  const checkPreflight = async (wave: number): Promise<number | null> =>
+    recordPreflight(wave, await ledgers.preflight(paper));
+  const halt = async (wave: number, reason: string, message: string): Promise<number | null> => {
+    const failure = await checkPreflight(wave);
+    if (failure !== null) return failure;
+    journal.append({ type: "halt", reason, wave });
+    log(message);
+    return null;
   };
 
-  for (let wave = 1; wave <= maxWaves; wave++) {
-    // human control channel: PAUSE halts gracefully; STEER.md reaches prompts
-    const signals = readHumanSignals(missionDir);
-    if (signals.paused) {
-      journal.append({ type: "halt", reason: "human_pause (delete progress/.../PAUSE to resume)", wave });
-      log("halt: human pause");
-      return 7;
-    }
-    const current = buildMission(paper,
-      await ledgers.knowledge(paper), await ledgers.claims(paper));
-    const complete = missionComplete(current);
-    const jobs = await readyJobs({
-      repoRoot, paper, mission: current, ledgers, probes, packetSize,
-      budgets: { ...(deps.jobBudgets ?? DEFAULT_JOB_BUDGETS), workPackets: maxWorkers },
-      missionComplete: complete, wave,
-    });
-    if (jobs.length === 0) {
-      if (complete) {
-        journal.append({ type: "halt", reason: "mission_complete", wave });
-        log("mission complete");
-        return 0;
-      }
-      journal.append({ type: "halt", reason: "no_ready_jobs (cycle, missing predecessors, or nothing to do)", wave });
-      log("halt: no ready jobs");
-      return 3;
-    }
-    const packets = jobs.filter(j => j.kind === "work-packet").map(j => j.packet!);
-    const others = jobs.filter(j => j.kind !== "work-packet");
-    const ready = readyFrontier(current);
-    const plan: import("./scheduler.js").WavePlan = {
-      wave, ready: ready.map(n => n.id), scheduled: packets.flat(), packets,
-    };
-    journal.append({ type: "wave_planned", wave, ready: jobs.map(j => j.id), scheduled: plan.scheduled.map(n => n.id) });
-
-    const [packetResult, jobReports] = await Promise.all([
-      runWave(plan, { ledgers, journal, runner, paper, repoRoot, journalWaveFinished: false, steer: signals.steer ?? undefined }),
-      runJobs(others, { repoRoot, paper, wave, ledgers, journal, runners: jobRunners }),
-    ]);
-    const result = tallyReports([...packetResult.reports, ...jobReports]);
+  let wave = 0;
+  try {
+    const startupFailure = await checkPreflight(wave);
+    if (startupFailure !== null) return startupFailure;
+    const initial = buildMission(paper, await ledgers.knowledge(paper), await ledgers.claims(paper));
     journal.append({
-      type: "wave_finished", wave,
-      admitted: result.admitted, rejected: result.rejected,
-      failed: result.failed, noProgress: result.noProgress,
+      type: "mission_loaded", paper, nodes: initial.size,
+      solid: [...initial.values()].filter(n => n.status === "solid").length,
     });
-    log(`wave ${wave}: packets=${plan.packets.length} jobs=${others.map(j => j.kind).join(",") || "-"} admitted=${result.admitted} promoted=${reportsPromoted(result)} rejected=${result.rejected} failed=${result.failed} no_progress=${result.noProgress}`);
-    // adaptive work quantum: grow when packets finish within one window,
-    // shrink when they burn many (telemetry we already collect)
-    const packetWindows = result.reports.filter(r => r.windowsUsed > 0).map(r => r.windowsUsed);
-    const maxWindows = Math.max(0, ...packetWindows);
-    if (maxWindows > 3) packetSize = Math.max(1, Math.floor(packetSize / 2));
-    else if (maxWindows <= 1 && result.failed === 0) packetSize = Math.min(8, packetSize * 2);
 
-    // observer memory pass (three-note cadence + 10KB cap)
-    await runObserver({
-      layout, plan, result, history: waveHistory(journal),
-      journal, runner: observerRunner, paper,
-    });
-    // reusable procedures enter methodology source only through the registry gate
-    try {
-      const report = await harvestSkillDrafts(repoRoot, skillDraftsDir(repoRoot, paper), wave);
-      const promoted = report.promoted.map(s => s.name);
-      const rejected = report.rejected.map(({ name, errors }) => ({ name, errors }));
-      if (promoted.length > 0 || rejected.length > 0) {
-        journal.append({ type: "skills_harvested", wave, promoted, rejected });
-        log(`wave ${wave}: skills promoted=${promoted.join(",") || "-"} rejected=${rejected.length}`);
+    const probes = deps.probes ?? cliProbes(repoRoot);
+    const jobRunners = {
+      decompose: deps.jobRunners?.decompose ?? new SdkJobRunner(),
+      acquire: deps.jobRunners?.acquire ?? new SdkJobRunner(),
+      "write-refresh": deps.jobRunners?.["write-refresh"] ?? new SdkJobRunner(),
+    };
+
+    for (wave = 1; wave <= maxWaves; wave++) {
+      const waveFailure = await checkPreflight(wave);
+      if (waveFailure !== null) return waveFailure;
+      // human control channel: PAUSE halts gracefully; STEER.md reaches prompts
+      const signals = readHumanSignals(missionDir);
+      if (signals.paused) {
+        const failure = await halt(wave, "human_pause (delete progress/.../PAUSE to resume)", "halt: human pause");
+        if (failure !== null) return failure;
+        return 7;
       }
-    } catch (e) {
-      const message = e instanceof Error ? e.message : String(e);
-      journal.append({
-        type: "skills_harvested", wave, promoted: [],
-        rejected: [{ name: "harvest", errors: [message] }],
+      const current = buildMission(paper,
+        await ledgers.knowledge(paper), await ledgers.claims(paper));
+      const complete = missionComplete(current);
+      const jobs = await readyJobs({
+        repoRoot, paper, mission: current, ledgers, probes, packetSize,
+        budgets: { ...(deps.jobBudgets ?? DEFAULT_JOB_BUDGETS), workPackets: maxWorkers },
+        missionComplete: complete, wave,
       });
-      log(`WARNING: wave ${wave}: skills harvest failed: ${message}`);
+      if (jobs.length === 0) {
+        if (complete) {
+          const failure = await halt(wave, "mission_complete", "mission complete");
+          if (failure !== null) return failure;
+          return 0;
+        }
+        const failure = await halt(wave, "no_ready_jobs (cycle, missing predecessors, or nothing to do)", "halt: no ready jobs");
+        if (failure !== null) return failure;
+        return 3;
+      }
+      const schedulingFailure = await checkPreflight(wave);
+      if (schedulingFailure !== null) return schedulingFailure;
+      const packets = jobs.filter(j => j.kind === "work-packet").map(j => j.packet!);
+      const others = jobs.filter(j => j.kind !== "work-packet");
+      const ready = readyFrontier(current);
+      const plan: import("./scheduler.js").WavePlan = {
+        wave, ready: ready.map(n => n.id), scheduled: packets.flat(), packets,
+      };
+      journal.append({ type: "wave_planned", wave, ready: jobs.map(j => j.id), scheduled: plan.scheduled.map(n => n.id) });
+
+      const [packetResult, jobReports] = await Promise.all([
+        runWave(plan, { ledgers, journal, runner, paper, repoRoot, journalWaveFinished: false, steer: signals.steer ?? undefined }),
+        runJobs(others, { repoRoot, paper, wave, ledgers, journal, runners: jobRunners }),
+      ]);
+      const result = tallyReports([...packetResult.reports, ...jobReports]);
+      journal.append({
+        type: "wave_finished", wave,
+        admitted: result.admitted, rejected: result.rejected,
+        failed: result.failed, noProgress: result.noProgress,
+      });
+      log(`wave ${wave}: packets=${plan.packets.length} jobs=${others.map(j => j.kind).join(",") || "-"} admitted=${result.admitted} promoted=${reportsPromoted(result)} rejected=${result.rejected} failed=${result.failed} no_progress=${result.noProgress}`);
+      // adaptive work quantum: grow when packets finish within one window,
+      // shrink when they burn many (telemetry we already collect)
+      const packetWindows = result.reports.filter(r => r.windowsUsed > 0).map(r => r.windowsUsed);
+      const maxWindows = Math.max(0, ...packetWindows);
+      if (maxWindows > 3) packetSize = Math.max(1, Math.floor(packetSize / 2));
+      else if (maxWindows <= 1 && result.failed === 0) packetSize = Math.min(8, packetSize * 2);
+
+      // observer memory pass (three-note cadence + 10KB cap)
+      await runObserver({
+        layout, plan, result, history: waveHistory(journal),
+        journal, runner: observerRunner, paper,
+      });
+      // reusable procedures enter methodology source only through the registry gate
+      try {
+        const report = await harvestSkillDrafts(repoRoot, skillDraftsDir(repoRoot, paper), wave);
+        const promoted = report.promoted.map(s => s.name);
+        const rejected = report.rejected.map(({ name, errors }) => ({ name, errors }));
+        if (promoted.length > 0 || rejected.length > 0) {
+          journal.append({ type: "skills_harvested", wave, promoted, rejected });
+          log(`wave ${wave}: skills promoted=${promoted.join(",") || "-"} rejected=${rejected.length}`);
+        }
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        journal.append({
+          type: "skills_harvested", wave, promoted: [],
+          rejected: [{ name: "harvest", errors: [message] }],
+        });
+        log(`WARNING: wave ${wave}: skills harvest failed: ${message}`);
+      }
+      // circuit breaker (component-wise progress; verified statuses only)
+      const gateFailure = await checkPreflight(wave);
+      if (gateFailure !== null) return gateFailure;
+      gateState = advanceGate(gateState, wave, await gateSignal(ledgers, paper));
+      const decision = decideGate(gateState, DEFAULT_BUDGETS);
+      journal.append({ type: "gate_decision", wave, decision: decision.decision, noProgressStreak: gateState.noProgressStreak });
+      if (decision.decision !== "continue") {
+        const failure = await halt(wave, decision.reason, `halt: ${decision.reason}`);
+        if (failure !== null) return failure;
+        return 4;
+      }
+      // human digest only after N completed context windows (default 5)
+      const digestFailure = await checkPreflight(wave);
+      if (digestFailure !== null) return digestFailure;
+      await maybeEmitDigest({ journal, ledgers, paper, missionDir, wave, threshold: deps.digestThreshold });
+      // tamper-evidence: a broken ledger hash chain halts the mission COLD
+      const chains = await ledgers.verifyChains();
+      if (!chains.ok) {
+        const reason = `ledger_tampered: ${JSON.stringify(chains.breaks)}`;
+        const failure = await halt(wave, reason, `halt: ${reason}`);
+        if (failure !== null) return failure;
+        return 8;
+      }
+      // substage-commit enforcement: zone-1 changes are committed EVERY wave;
+      // a rejected commit halts the mission rather than piling up dirty state.
+      try {
+        const wc = commitWave(repoRoot, paper, wave,
+          `admitted=${result.admitted} rejected=${result.rejected} failed=${result.failed} no_progress=${result.noProgress}`);
+        if (wc.committed) journal.append({ type: "wave_committed", wave, sha: wc.sha! });
+      } catch (e) {
+        const failure = await halt(wave, (e as Error).message, `halt: ${(e as Error).message}`);
+        if (failure !== null) return failure;
+        return 6;
+      }
+      if (deps.dryRun) return (await checkPreflight(wave)) ?? 0; // one planning wave is enough
     }
-    // circuit breaker (component-wise progress; verified statuses only)
-    gateState = advanceGate(gateState, wave, await gateSignal(ledgers, paper));
-    const decision = decideGate(gateState, DEFAULT_BUDGETS);
-    journal.append({ type: "gate_decision", wave, decision: decision.decision, noProgressStreak: gateState.noProgressStreak });
-    if (decision.decision !== "continue") {
-      journal.append({ type: "halt", reason: decision.reason, wave });
-      log(`halt: ${decision.reason}`);
-      return 4;
-    }
-    // human digest only after N completed context windows (default 5)
-    await maybeEmitDigest({ journal, ledgers, paper, missionDir, wave, threshold: deps.digestThreshold });
-    // tamper-evidence: a broken ledger hash chain halts the mission COLD
-    const chains = await ledgers.verifyChains();
-    if (!chains.ok) {
-      const reason = `ledger_tampered: ${JSON.stringify(chains.breaks).slice(0, 300)}`;
-      journal.append({ type: "halt", reason, wave });
-      log(`halt: ${reason}`);
-      return 8;
-    }
-    // substage-commit enforcement: zone-1 changes are committed EVERY wave;
-    // a rejected commit halts the mission rather than piling up dirty state.
-    try {
-      const wc = commitWave(repoRoot, paper, wave,
-        `admitted=${result.admitted} rejected=${result.rejected} failed=${result.failed} no_progress=${result.noProgress}`);
-      if (wc.committed) journal.append({ type: "wave_committed", wave, sha: wc.sha! });
-    } catch (e) {
-      journal.append({ type: "halt", reason: (e as Error).message, wave });
-      log(`halt: ${(e as Error).message}`);
-      return 6;
-    }
-    if (deps.dryRun) return 0; // one planning wave is enough in dry-run mode
+    const finalFailure = await checkPreflight(Math.max(0, wave - 1));
+    if (finalFailure !== null) return finalFailure;
+    return 2;
+  } catch (e) {
+    if (!(e instanceof LedgerError)) throw e;
+    // A read can fail after a successful preflight. Retain that failure even
+    // if the next read succeeds; it must never become an empty mission state.
+    const report = await ledgers.preflight(paper);
+    report.ok = false;
+    report.unreadable.push(e.message);
+    return recordPreflight(wave, report)!;
   }
-  return 2;
 }
 
 function reportsPromoted(r: { reports: { outcome: string }[] }): number {

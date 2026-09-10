@@ -78,6 +78,7 @@ export interface WorkerReport {
 /** Typed agent-to-agent messages; one JSONL line each in the journal. */
 export type Message =
   | { type: "mission_loaded"; paper: string; nodes: number; solid: number }
+  | { type: "preflight"; wave: number; ok: boolean; breaks: number; unreadable: string[] }
   | { type: "wave_planned"; wave: number; ready: string[]; scheduled: string[] }
   | { type: "task_assigned"; wave: number; node: string; runner: string }
   | { type: "worker_done"; wave: number; report: WorkerReport }

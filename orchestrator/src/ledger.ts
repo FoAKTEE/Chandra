@@ -8,7 +8,15 @@ import type { ClaimRow, KnowledgeRow, ResultRow } from "./types.js";
 
 const execFileP = promisify(execFile);
 
-export class LedgerError extends Error {}
+export class LedgerError extends Error {
+  constructor(message: string, readonly stdout?: string, readonly code?: number | string) { super(message); }
+}
+
+export interface PreflightReport {
+  ok: boolean;
+  breaks: unknown[];
+  unreadable: string[];
+}
 
 /** Roles the delegation policy accepts on appends (kernel §6). */
 export type ActorRole = "worker" | "validator" | "observer" | "human-override";
@@ -16,22 +24,35 @@ export type ActorRole = "worker" | "validator" | "observer" | "human-override";
 async function runCli(repoRoot: string, script: string, args: string[],
                        stdin?: string, role?: ActorRole): Promise<string> {
   const scriptPath = path.join(repoRoot, script);
-  const child = execFileP("python3", [scriptPath, ...args], {
-    cwd: repoRoot,
-    maxBuffer: 16 * 1024 * 1024,
-    env: role ? { ...process.env, CHANDRA_ROLE: role } : process.env,
-  });
-  if (stdin !== undefined) {
-    child.child.stdin?.write(stdin);
-    child.child.stdin?.end();
-  }
+  // Bound each channel, including a partially buffered query whose final
+  // line can itself be several MiB long.
+  const tail = (s: string) => s.trim().split("\n").slice(-3).join(" | ").slice(-2000);
   try {
-    const { stdout } = await child;
+    const child = execFileP(process.env.CHANDRA_PYTHON ?? "python3", [scriptPath, ...args], {
+      cwd: repoRoot,
+      maxBuffer: 16 * 1024 * 1024,
+      env: role ? { ...process.env, CHANDRA_ROLE: role } : process.env,
+    });
+    if (stdin !== undefined) {
+      child.child.stdin?.write(stdin);
+      child.child.stdin?.end();
+    }
+    const { stdout, stderr } = await child;
+    // The recovering Python reader may return a complete prefix with exit 0.
+    // That is not a complete ledger read for mission decisions.
+    if (args[0] === "query" && stderr.includes("incomplete tail (crash mid-write)")) {
+      throw new LedgerError(`${script} query failed: incomplete ledger read` +
+        `; stderr: ${tail(stderr)}; stdout: ${tail(stdout)}`, stdout);
+    }
     return stdout;
   } catch (err: unknown) {
-    const e = err as { stderr?: string; message?: string };
+    if (err instanceof LedgerError) throw err;
+    const e = err as { stderr?: string; stdout?: string; message?: string; code?: number | string };
+    const detail = e.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER"
+      ? "output exceeded 16 MiB" : tail(e.message ?? "CLI error");
     throw new LedgerError(
-      `${script} ${args[0]} failed: ${(e.stderr || e.message || "").trim().split("\n").slice(-3).join(" | ")}`);
+      `${script} ${args[0]} failed: ${detail}` +
+      `; stderr: ${tail(e.stderr ?? "")}; stdout: ${tail(e.stdout ?? "")}`, e.stdout, e.code);
   }
 }
 
@@ -58,15 +79,9 @@ export class Ledgers {
   }
 
   async claims(paper: string): Promise<ClaimRow[]> {
-    // tolerate a mission with no claim ledger yet
-    try {
-      const out = await runCli(this.repoRoot, "_common/claims_database.py",
-        ["query", "--paper", paper, "--repo-root", this.repoRoot]);
-      return parseRows<ClaimRow>(out, "claims");
-    } catch (e) {
-      if (e instanceof LedgerError) return [];
-      throw e;
-    }
+    const out = await runCli(this.repoRoot, "_common/claims_database.py",
+      ["query", "--paper", paper, "--repo-root", this.repoRoot]);
+    return parseRows<ClaimRow>(out, "claims");
   }
 
   async results(paper: string): Promise<ResultRow[]> {
@@ -94,17 +109,51 @@ export class Ledgers {
 
   /** Tamper-evidence: walk every ledger's hash chain (R4). */
   async verifyChains(): Promise<{ ok: boolean; breaks: unknown[] }> {
+    let out: string;
     try {
-      const out = await runCli(this.repoRoot, "_common/contract.py",
+      out = await runCli(this.repoRoot, "_common/contract.py",
         ["verify-chains", "--repo-root", this.repoRoot]);
-      return JSON.parse(out);
     } catch (e) {
-      // exit 1 = broken chain; the report is on stdout inside the error
-      const msg = (e as Error).message;
-      const m = msg.match(/\{.*\}/s);
-      if (m) { try { return JSON.parse(m[0]); } catch { /* fall through */ } }
-      return { ok: false, breaks: [{ reason: msg.slice(0, 200) }] };
+      // A broken chain is an ordinary report on stdout. An unavailable CLI
+      // or an invalid report is a read failure, not evidence of tampering.
+      if (e instanceof LedgerError && e.code === 1 && e.stdout) {
+        try {
+          const report = JSON.parse(e.stdout);
+          if (report?.ok === false && Array.isArray(report.breaks)) return report;
+        } catch { /* preserve the original CLI diagnostic below */ }
+      }
+      throw e;
     }
+    try {
+      const report = JSON.parse(out);
+      if (typeof report?.ok !== "boolean" || !Array.isArray(report.breaks)) {
+        throw new Error("expected ok and breaks");
+      }
+      return report;
+    } catch (e) {
+      throw new LedgerError(`unparseable _common/contract.py verify-chains output: ${(e as Error).message}`);
+    }
+  }
+
+  /** Check integrity and readability before any mission decision. Missing
+   * ledger files are valid empty arrays returned by the Python readers. */
+  async preflight(paper: string): Promise<PreflightReport> {
+    const [chains, ...reads] = await Promise.allSettled([
+      this.verifyChains(), this.knowledge(paper), this.results(paper), this.claims(paper),
+    ] as const);
+    const unreadable: string[] = [];
+    const labels = ["verify-chains", "knowledge", "results", "claims"];
+    [chains, ...reads].forEach((result, i) => {
+      if (result.status === "rejected") {
+        const message = result.reason instanceof Error ? result.reason.message : String(result.reason);
+        unreadable.push(`${labels[i]}: ${message}`);
+      }
+    });
+    return {
+      ok: chains.status === "fulfilled" && chains.value.ok && unreadable.length === 0,
+      breaks: chains.status === "fulfilled" ? chains.value.breaks : [],
+      unreadable,
+    };
   }
 
   /** Per-node ledger snapshot used to derive worker outcomes by DIFF. */

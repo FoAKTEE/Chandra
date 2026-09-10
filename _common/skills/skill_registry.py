@@ -18,13 +18,14 @@ Gates (`validate`, run by `promote`/`harvest` before anything is copied):
     `pipelines/...`, ...) and every relative link / `${CLAUDE_SKILL_DIR}/...`
     reference RESOLVES — a skill pointing at a deleted file is spec drift and
     is rejected, not shipped.
-  * an optional `## Verify` section carries ONE fenced bash block; with
+  * a required `## Verify` section carries ONE fenced bash block; with
     `--exec` (always on for promotion) it is RUN from the repo root and must
     exit 0 — the closed-loop rule applied to documentation.
 
 USAGE
     python _common/skill_registry.py list [--root R] [--json]
     python _common/skill_registry.py validate [--root R] [--exec] [--strict] [NAME ...]
+    python _common/skill_registry.py admit NAME ... [--root R]    # execute Verify and receipt installed skills
     python _common/skill_registry.py render-index [--root R] [--out PATH]
     python _common/skill_registry.py briefing [--root R]          # <available-skills> block for SessionStart hooks
     python _common/skill_registry.py new NAME --description D [--body-file F] [--root R]
@@ -46,19 +47,24 @@ level of nesting) — enough for every field Claude Code documents.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 SKILLS_DIR = ".claude/skills"
 SKILL_FILE = "SKILL.md"
 INDEX_FILE = "INDEX.md"
+ADMITTED_FILE = "admitted.json"
 
 NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 NAME_MAX = 64
@@ -82,7 +88,7 @@ EFFORT_VALUES = {"low", "medium", "high", "xhigh", "max", "ultracode", "auto"}
 _CODE_SPAN_RE = re.compile(r"`([^`\n]+)`")
 _MD_LINK_RE = re.compile(r"\[[^\]]*\]\(([^)\s]+)\)")
 _SKILL_DIR_REF_RE = re.compile(r"\$\{CLAUDE_SKILL_DIR\}/([^\s`\"')]+)")
-_FENCE_RE = re.compile(r"```(?:bash|sh|shell)?[ \t]*\n(.*?)```", re.DOTALL)
+_FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
 _PATH_EXTS = (".md", ".py", ".sh", ".ts", ".js", ".json", ".jsonl", ".tex", ".toml", ".yaml", ".yml", ".txt", ".csv")
 
 
@@ -247,20 +253,50 @@ def check_references(body: str, skill_dir: Path, repo_root: Path) -> list[str]:
 
 
 def verify_block(body: str) -> tuple[str | None, str | None]:
-    """(command, error): the fenced bash block under `## Verify`, if the
-    section exists. A Verify heading without a fenced block is an error."""
-    m = re.search(r"^##\s+Verify\b[^\n]*\n(.*?)(?=^##\s|\Z)", body, re.MULTILINE | re.DOTALL)
-    if not m:
-        return None, None
-    f = _FENCE_RE.search(m.group(1))
-    if not f or not f.group(1).strip():
+    """(command, error): exactly one shell block across the required Verify section(s)."""
+    found_section = in_verify = False
+    closing: re.Pattern[str] | None = None
+    command_lines: list[str] | None = None
+    blocks: list[tuple[str, list[str]]] = []
+    for line in body.splitlines():
+        if closing is not None:
+            if closing.fullmatch(line):
+                closing = None
+                command_lines = None
+            elif command_lines is not None:
+                command_lines.append(line)
+            continue
+        fence = _FENCE_RE.match(line)
+        if fence:
+            marker, language = fence.groups()
+            if marker[0] == "`" and "`" in language:
+                continue
+            closing = re.compile(rf" {{0,3}}{marker[0]}{{{len(marker)},}}[ \t]*")
+            if in_verify:
+                command_lines = []
+                blocks.append((language.strip(), command_lines))
+            continue
+        heading = re.match(r"^ {0,3}(#{1,2})[ \t]+(.*)", line)
+        if heading:
+            in_verify = heading[1] == "##" and re.match(r"Verify\b", heading[2]) is not None
+            found_section |= in_verify
+    if not found_section:
+        return None, "Verify section is required"
+    if len(blocks) > 1:
+        return None, f"Verify section must contain exactly one fenced block (found {len(blocks)})"
+    if not blocks or command_lines is not None:
         return None, "Verify section has no fenced bash block"
-    return f.group(1).strip(), None
+    language, lines = blocks[0]
+    command = "\n".join(lines).strip()
+    if language not in ("bash", "sh", "shell", "") or not command:
+        return None, "Verify section has no fenced bash block"
+    return command, None
 
 
 def run_verify(command: str, skill_dir: Path, repo_root: Path) -> str | None:
     """Run the Verify block from the repo root; None on exit 0, else the error."""
-    env = {**os.environ, "CLAUDE_SKILL_DIR": str(skill_dir), "CLAUDE_PROJECT_DIR": str(repo_root)}
+    env = {**os.environ, "CLAUDE_SKILL_DIR": str(skill_dir), "CLAUDE_SKILL_CANDIDATE": "1",
+           "CLAUDE_PROJECT_DIR": str(repo_root), "PYTHONDONTWRITEBYTECODE": "1"}
     try:
         proc = subprocess.run(["bash", "-e", "-c", command], cwd=str(repo_root), env=env,
                               capture_output=True, text=True, timeout=VERIFY_TIMEOUT_S)
@@ -332,14 +368,16 @@ def validate_skill(skill_dir: str | Path, *, repo_root: str | Path | None = None
         if len(body) > BODY_CHARS_WARN:
             rep.warnings.append(f"body is {len(body)} chars (>{BODY_CHARS_WARN}); progressive disclosure wants a lean SKILL.md")
         rep.errors.extend(check_references(body, d, root))
-        cmd, err = verify_block(body)
-        if err:
-            rep.errors.append(err)
-        rep.verify_command = cmd
-        if cmd and execute:
-            failure = run_verify(cmd, d, root)
-            if failure:
-                rep.errors.append(failure)
+    cmd, err = verify_block(body)
+    if err:
+        rep.errors.append(err)
+    rep.verify_command = cmd
+    if cmd and re.search(rf"\.claude/skills/{re.escape(d.name)}(?=/|['\"]|$)", cmd):
+        rep.errors.append("Verify block reads the installed skill instead of ${CLAUDE_SKILL_DIR}")
+    elif cmd and execute:
+        failure = run_verify(cmd, d, root)
+        if failure:
+            rep.errors.append(failure)
 
     rep.ok = not rep.errors and not (strict and rep.warnings)
     return rep
@@ -354,6 +392,8 @@ class SkillInfo:
     description: str
     frontmatter: dict[str, Any]
     parse_error: str | None = None
+    admitted: bool = False
+    reason: str | None = None
 
     @property
     def invocation(self) -> str:
@@ -369,21 +409,83 @@ def skills_root(repo_root: str | Path | None) -> Path:
     return (Path(repo_root).resolve() if repo_root else Path.cwd()) / SKILLS_DIR
 
 
-def list_skills(repo_root: str | Path | None = None) -> list[SkillInfo]:
+def _skill_hashes(skill_dir: Path) -> dict[str, Any]:
+    files = {}
+    pending = [(skill_dir, {skill_dir.resolve()})]
+    while pending:
+        directory, ancestors = pending.pop()
+        for path in sorted(directory.iterdir()):
+            if path.is_dir():
+                resolved = path.resolve()
+                if resolved in ancestors:
+                    raise SkillError(f"cyclic supporting directory: {path}")
+                pending.append((path, ancestors | {resolved}))
+            elif path.is_file() and path != skill_dir / SKILL_FILE:
+                files[path.relative_to(skill_dir).as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
+    return {"sha256": hashlib.sha256((skill_dir / SKILL_FILE).read_bytes()).hexdigest(), "files": files}
+
+
+def _read_receipts(repo_root: Path) -> dict[str, Any]:
+    path = repo_root / SKILLS_DIR / ADMITTED_FILE
+    receipts = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+    if not isinstance(receipts, dict):
+        raise SkillError(f"{path} must contain an object of admission receipts")
+    return receipts
+
+
+def _write_receipt(repo_root: Path, name: str, receipt: dict[str, Any]) -> None:
+    path = repo_root / SKILLS_DIR / ADMITTED_FILE
+    receipts = _read_receipts(repo_root)
+    receipts[name] = receipt
+    with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
+                                     prefix=".admitted-", suffix=".tmp", delete=False) as f:
+        tmp = Path(f.name)
+        try:
+            f.write(json.dumps(receipts, indent=2, sort_keys=True) + "\n")
+            f.flush()
+            os.replace(tmp, path)
+        finally:
+            tmp.unlink(missing_ok=True)
+
+
+def _admission_reason(skill_dir: Path, receipt: Any) -> str | None:
+    if not isinstance(receipt, dict):
+        return "no admission receipt"
+    try:
+        current = _skill_hashes(skill_dir)
+    except (OSError, SkillError) as e:
+        return f"cannot read admitted skill files: {e}"
+    if current["sha256"] != receipt.get("sha256"):
+        return "SKILL.md hash does not match admission receipt"
+    if current["files"] != receipt.get("files"):
+        return "supporting file hashes do not match admission receipt"
+    return None
+
+
+def list_skills(repo_root: str | Path | None = None, *, include_unadmitted: bool = False) -> list[SkillInfo]:
+    """Discover only admitted bytes; include rejected directories for `list --json`."""
     root = Path(repo_root).resolve() if repo_root else Path.cwd()
     base = root / SKILLS_DIR
     out: list[SkillInfo] = []
     if not base.is_dir():
         return out
+    receipts = _read_receipts(root)
     for d in sorted(p for p in base.iterdir() if p.is_dir()):
         f = d / SKILL_FILE
         if not f.is_file():
+            if include_unadmitted:
+                out.append(SkillInfo(d.name, str(f.relative_to(root)), "", {},
+                                     reason=f"missing {SKILL_FILE}"))
             continue
         try:
             fm, _ = parse_frontmatter(f.read_text(encoding="utf-8"))
-            out.append(SkillInfo(d.name, str(f.relative_to(root)), str(fm.get("description", "")).strip(), fm))
+            info = SkillInfo(d.name, str(f.relative_to(root)), str(fm.get("description", "")).strip(), fm)
         except SkillError as e:
-            out.append(SkillInfo(d.name, str(f.relative_to(root)), "(unparseable frontmatter)", {}, str(e)))
+            info = SkillInfo(d.name, str(f.relative_to(root)), "(unparseable frontmatter)", {}, str(e))
+        info.reason = info.parse_error or _admission_reason(d, receipts.get(d.name))
+        info.admitted = info.reason is None
+        if info.admitted or include_unadmitted:
+            out.append(info)
     return out
 
 
@@ -456,14 +558,15 @@ test -f "${{CLAUDE_SKILL_DIR:-.}}/SKILL.md"
 
 def new_skill(repo_root: str | Path | None, name: str, description: str, *,
               body: str | None = None, dest_dir: str | Path | None = None) -> Path:
-    """Scaffold `.claude/skills/<name>/SKILL.md` (or `dest_dir/<name>/`). Refuses
+    """Scaffold runtime `skills/drafts/<name>/SKILL.md` (or `dest_dir/<name>/`). Refuses
     to overwrite. The scaffold validates as-is; replace the Verify block with
     the skill's real closed-loop check."""
     if not NAME_RE.match(name) or len(name) > NAME_MAX:
         raise SkillError(f"name {name!r} must be kebab-case, <= {NAME_MAX} chars")
     if not description.strip():
         raise SkillError("description is required")
-    base = Path(dest_dir).resolve() if dest_dir else skills_root(repo_root)
+    base = (Path(dest_dir).resolve() if dest_dir else
+            Path(os.environ.get("CHANDRA_RUNTIME") or "/tmp/chandra").resolve() / "skills" / "drafts")
     d = base / name
     if d.exists():
         raise SkillError(f"skill directory already exists: {d}")
@@ -477,6 +580,35 @@ def new_skill(repo_root: str | Path | None, name: str, description: str, *,
     return d
 
 
+def _verified_receipt(skill_dir: Path, repo_root: Path) -> tuple[SkillReport, dict[str, Any] | None]:
+    try:
+        before = _skill_hashes(skill_dir) if (skill_dir / SKILL_FILE).is_file() else None
+    except (OSError, SkillError) as e:
+        return SkillReport(skill_dir.name, str(skill_dir), ok=False, errors=[str(e)]), None
+    rep = validate_skill(skill_dir, repo_root=repo_root, execute=True)
+    if not rep.ok:
+        return rep, None
+    if _admission_reason(skill_dir, before):
+        rep.errors.append("skill files changed during verification")
+        rep.ok = False
+        return rep, None
+    return rep, {**before, "admitted_at": datetime.now(timezone.utc).isoformat(), "verify": rep.verify_command}
+
+
+def admit(names: list[str], *, repo_root: str | Path | None = None) -> list[SkillReport]:
+    """Execute Verify and write receipts for already-installed skills."""
+    root = Path(repo_root).resolve() if repo_root else Path.cwd()
+    reports = []
+    for name in names:
+        rep, receipt = _verified_receipt(root / SKILLS_DIR / name, root)
+        reports.append(rep)
+        if receipt is not None:
+            _write_receipt(root, name, receipt)
+    if any(r.ok for r in reports):
+        render_index(root, out=root / SKILLS_DIR / INDEX_FILE)
+    return reports
+
+
 def promote(draft_dirs: list[str | Path], *, repo_root: str | Path | None = None,
             force: bool = False, dry_run: bool = False) -> dict[str, Any]:
     """Admit drafts into `.claude/skills/`: each is validated WITH its Verify
@@ -487,7 +619,7 @@ def promote(draft_dirs: list[str | Path], *, repo_root: str | Path | None = None
     report: dict[str, Any] = {"promoted": [], "rejected": []}
     for src in draft_dirs:
         src = Path(src).resolve()
-        rep = validate_skill(src, repo_root=root, execute=True)
+        rep, receipt = _verified_receipt(src, root)
         if not rep.ok:
             report["rejected"].append({"name": src.name, "source": str(src), "errors": rep.errors})
             continue
@@ -500,6 +632,11 @@ def promote(draft_dirs: list[str | Path], *, repo_root: str | Path | None = None
             if dest.exists():
                 shutil.rmtree(dest)
             shutil.copytree(src, dest)
+            reason = _admission_reason(dest, receipt)
+            if reason:
+                report["rejected"].append({"name": src.name, "source": str(src), "errors": [reason]})
+                continue
+            _write_receipt(root, src.name, receipt)
         report["promoted"].append({"name": src.name, "source": str(src), "path": str(dest.relative_to(root))})
     if report["promoted"] and not dry_run:
         render_index(root, out=dest_root / INDEX_FILE)
@@ -543,10 +680,14 @@ def main(argv: list[str] | None = None) -> int:
     ls.add_argument("--json", action="store_true")
 
     va = sub.add_parser("validate", help="run the gates on every (or the named) skills; exit 1 on any rejection")
-    va.add_argument("names", nargs="*")
+    va.add_argument("names", nargs="*", help="installed skill names or draft directories")
     va.add_argument("--root", type=Path, default=None)
     va.add_argument("--exec", action="store_true", help="also RUN each skill's `## Verify` block from the repo root")
     va.add_argument("--strict", action="store_true", help="warnings are errors")
+
+    ad = sub.add_parser("admit", help="execute Verify and receipt already-installed skills; exit 1 on rejection")
+    ad.add_argument("names", nargs="+")
+    ad.add_argument("--root", type=Path, default=None)
 
     ri = sub.add_parser("render-index", help=f"render the GENERATED skills index (default: {SKILLS_DIR}/{INDEX_FILE})")
     ri.add_argument("--root", type=Path, default=None)
@@ -560,7 +701,8 @@ def main(argv: list[str] | None = None) -> int:
     nw.add_argument("--description", required=True)
     nw.add_argument("--body-file", type=Path, default=None, help="markdown body to use instead of the template")
     nw.add_argument("--root", type=Path, default=None)
-    nw.add_argument("--dest", type=Path, default=None, help="draft location (default: .claude/skills)")
+    nw.add_argument("--dest", type=Path, default=None,
+                    help="draft location (default: ${CHANDRA_RUNTIME:-/tmp/chandra}/skills/drafts)")
 
     pr = sub.add_parser("promote", help="validate (with Verify executed) and copy drafts into .claude/skills; exit 1 if any rejected")
     pr.add_argument("drafts", nargs="+", type=Path)
@@ -577,26 +719,34 @@ def main(argv: list[str] | None = None) -> int:
     root = args.root.resolve() if getattr(args, "root", None) else Path.cwd()
 
     if args.cmd == "list":
-        skills = list_skills(root)
+        skills = list_skills(root, include_unadmitted=args.json)
         if args.json:
             print(json.dumps([{"name": s.name, "path": s.path, "description": s.description,
-                               "invocation": s.invocation, "parse_error": s.parse_error} for s in skills], indent=2))
+                               "invocation": s.invocation, "parse_error": s.parse_error,
+                               "admitted": s.admitted, "reason": s.reason} for s in skills], indent=2))
         else:
             for s in skills:
                 print(f"{s.name:<32} {s.invocation:<24} {' '.join(s.description.split())[:80]}")
             print(f"{len(skills)} skills under {SKILLS_DIR}/")
         return 0
 
-    if args.cmd == "validate":
+    if args.cmd in ("validate", "admit"):
         base = root / SKILLS_DIR
         dirs = sorted(p for p in base.iterdir() if p.is_dir()) if base.is_dir() else []
         if args.names:
             dirs = [d for d in dirs if d.name in set(args.names)]
             missing = set(args.names) - {d.name for d in dirs}
+            if args.cmd == "validate":
+                for name in sorted(missing):
+                    draft = Path(name).resolve()
+                    if draft.is_dir():
+                        dirs.append(draft)
+                        missing.remove(name)
             if missing:
                 print(f"no such skill(s): {sorted(missing)}", file=sys.stderr)
                 return 1
-        reports = [validate_skill(d, repo_root=root, execute=args.exec, strict=args.strict) for d in dirs]
+        reports = (admit([d.name for d in dirs], repo_root=root) if args.cmd == "admit" else
+                   [validate_skill(d, repo_root=root, execute=args.exec, strict=args.strict) for d in dirs])
         _print_reports(reports)
         return 0 if all(r.ok for r in reports) else 1
 
@@ -620,7 +770,8 @@ def main(argv: list[str] | None = None) -> int:
         except SkillError as e:
             print(f"error: {e}", file=sys.stderr)
             return 1
-        print(json.dumps({"created": str(d)}))
+        command = shlex.join(["python3", str(Path(__file__).resolve()), "promote", str(d), "--root", str(root)])
+        print(json.dumps({"created": str(d), "promote": command}))
         return 0
 
     if args.cmd == "promote":

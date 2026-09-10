@@ -88,7 +88,10 @@ description: Append an admitted or classified result through the executable evid
    ```bash
    CHANDRA_ROLE=worker python3 _common/ledgers/result_database.py append-batch --repo-root . --rows-file "${RESULT_ROWS:?}"
    ```
-   Every row is gated sequentially; summaries refresh once per touched paper.
+   Every row's `verification.command` runs first, outside the repository ledger lock; the batch
+   then takes the lock once (`_common/ledgers/txn.py`) and re-validates each row's dependencies
+   and evidence against the current files before appending, in order; summaries refresh once
+   per touched paper. Never call an append CLI from inside a process that already holds the lock.
    A failing row stops the batch, leaving the admitted prefix on disk. Inspect
    history before retrying the remaining suffix; this batch does not deduplicate.
    Correct a result by appending its full replacement under the same `result_id`.

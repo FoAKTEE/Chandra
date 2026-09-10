@@ -92,7 +92,9 @@ description: Record every pass, fail, crash, and partial trial in the error ledg
    ```bash
    CHANDRA_ROLE=worker python3 _common/ledgers/error_database.py append --repo-root . --row-file "${TRIAL_ROW:?}"
    ```
-   Strict delegation requires an allowed role; the row records `actor_role`.
+   Strict delegation requires an allowed role; the row records `actor_role`. Appends take the
+   repository ledger lock (`_common/ledgers/txn.py`, `CHANDRA_LOCK_TIMEOUT_S`) so parallel
+   packets cannot corrupt the chain; `node_seq` is allocated under that lock.
    Appends auto-fill timestamp/git_commit, hash-chain the row, and normally write
    `results/ledgers/error/paper_<P>/trials.jsonl`. Batch summaries refresh once per
    touched paper. A bad row leaves the admitted prefix intact; inspect it before

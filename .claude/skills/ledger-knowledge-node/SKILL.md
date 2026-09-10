@@ -53,7 +53,9 @@ description: Create namespaced DAG nodes and append evidence-backed promotions f
    Omit the file flag to read the corresponding object/array from stdin.
    Under strict delegation, append requires an allowed role and records
    `actor_role`. Rows normally land in `results/ledgers/knowledge/paper_<P>/nodes.jsonl`.
-   Omit timestamp, git_commit, and node_seq for automatic assignment. Each
+   Omit timestamp, git_commit, and node_seq for automatic assignment (assigned under the
+   repository ledger lock, `_common/ledgers/txn.py`; a solid row's verification command runs
+   before the lock and its predecessors are re-checked inside it). Each
    node_seq numbers another knowledge record under the same node, independently
    of its error-ledger trial sequence. Summary CSV is rendered automatically.
 

@@ -39,8 +39,9 @@ whatever client it runs in (Claude Code, Codex CLI, an Agent SDK session):
   or model attribution of any kind; never commit large datasets or mirrors.
 - **Skills are auto-written, then admitted.** A reusable procedure you
   discovered becomes a draft skill (`skill-write`), lands only through
-  `python3 _common/skill_registry.py promote` (validated, Verify executed),
-  and ships in its own `infra(skills):` commit.
+  `python3 _common/skill_registry.py promote` (validated, Verify executed against
+  the candidate, receipt written), and ships in its own `infra(skills):` commit;
+  after editing an installed skill, `python3 _common/skill_registry.py admit <name>`.
 
 ## Loading skills outside Claude Code
 

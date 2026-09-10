@@ -32,7 +32,10 @@ Kernel §5: a sub-agent gets an explicit context pack — the skill list is part
 4. **Any prompt / context pack** — paste the output of
    `python3 _common/skill_registry.py briefing --root .`; the worker then reads a skill's
    `SKILL.md` when its description matches the task.
-5. **Keep the list true** — after any promotion run `python3 _common/skill_registry.py render-index --root .`;
+5. **Keep the list true** — discovery (`list`, `briefing`, `render-index`, `harvest`) shows only skills
+   whose bytes match their receipt in `.claude/skills/admitted.json`; after editing an installed skill
+   run `python3 _common/skill_registry.py admit <name> --root .` (Verify executed, receipt rewritten);
+   `list --json` names anything unadmitted and why; after any promotion run `python3 _common/skill_registry.py render-index --root .`;
    in CI run `python3 _common/skill_registry.py validate --exec --root .` (also executed by
    `tests/test_skill_registry.py`), so a skill that points at a deleted file fails the build.
 

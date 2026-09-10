@@ -217,7 +217,9 @@ agents reach them through `AGENTS.md`; any client can inject
 `bash .claude/inject_infra.sh --with-skills` at session start. Skills are tools,
 so they pass a gate: `python3 _common/skill_registry.py validate --exec` checks
 the frontmatter, rejects dangling references, and executes each skill's
-`## Verify` block (the test suite does the same for every shipped skill).
+`## Verify` block against the candidate's own bytes (the test suite does the same
+for every shipped skill); admitted skills carry a receipt in
+`.claude/skills/admitted.json`, and only receipted, unmodified skills are listed.
 Missions autowrite skills — workers draft them in the runtime dir and each wave
 harvests the drafts through that gate. The repo also runs its own methodology on
 itself: the `software` domain records infra work in the ledgers under

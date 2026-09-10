@@ -69,7 +69,8 @@ description: Maintain claims, obligations, and assumptions as gated ledger entri
    Use single append or append-batch --force for an owner, reference, or dependency
    change that keeps status and statement. Force does not bypass admission.
    A later rejection leaves earlier batch rows appended; query before replaying.
-   Claim batches currently regenerate summaries per appended row.
+   Claim batches currently regenerate summaries per appended row. Appends and their
+   settling-reference checks run under the repository ledger lock (`_common/ledgers/txn.py`).
 
 5. Settle references in dependency order. Append the supporting result/node or
    reduction obligation first, then submit a complete updated entry:

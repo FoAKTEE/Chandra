@@ -50,5 +50,7 @@ merely restates a spec — point at the spec instead.
 ## Verify
 
 ```bash
-python3 _common/skill_registry.py validate --root . skill-write && python3 _common/skill_registry.py render-index --root . --out - | grep -q '^| \[`skill-write`\]'
+python3 _common/skill_registry.py validate --root . skill-write \
+  && python3 _common/skill_registry.py --help | grep -q admit \
+  && python3 _common/skill_registry.py list --root . --json | grep -q '"name": "skill-write"'
 ```

@@ -159,10 +159,10 @@
     "verify": "python3 _common/skill_registry.py briefing --root . | grep -q '^<available-skills' \\\n  && bash .claude/inject_infra.sh --with-skills | grep -q '<available-skills' \\\n  && grep -q 'INDEX.md' AGENTS.md"
   },
   "skill-write": {
-    "admitted_at": "2026-09-10T20:56:08.491914+00:00",
+    "admitted_at": "2026-09-10T21:16:27.247289+00:00",
     "files": {},
-    "sha256": "bd74e1fb47316f30bba67c4096e91fded702683010984610df6b2127bf046f6d",
-    "verify": "python3 _common/skill_registry.py validate --root . skill-write && python3 _common/skill_registry.py render-index --root . --out - | grep -q '^| \\[`skill-write`\\]'"
+    "sha256": "074843fb407897734431c4291dc844a76869e201eb19730080072d24feb84dc6",
+    "verify": "python3 _common/skill_registry.py validate --root . skill-write \\\n  && python3 _common/skill_registry.py --help | grep -q admit \\\n  && python3 _common/skill_registry.py list --root . --json | grep -q '\"name\": \"skill-write\"'"
   },
   "task-template": {
     "admitted_at": "2026-09-10T20:56:08.530283+00:00",

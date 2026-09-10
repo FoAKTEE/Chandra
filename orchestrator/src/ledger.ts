@@ -90,6 +90,15 @@ export class Ledgers {
     return parseRows<ResultRow>(out, "results");
   }
 
+  async renderState(paper: string): Promise<string> {
+    const rendered = await runCli(this.repoRoot, "_common/result_database.py",
+      ["render-state", "--paper", paper, "--repo-root", this.repoRoot]);
+    // The renderer can recover a prefix from a torn tail. The query bridge
+    // rejects that incomplete read instead of publishing a healthy view.
+    await this.results(paper);
+    return rendered;
+  }
+
   /** Append via the gated CLI. Used by stubs/tests and the observer; real
    * workers run the CLIs themselves inside their own sessions. */
   async appendKnowledge(row: Record<string, unknown>): Promise<string> {

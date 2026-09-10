@@ -1,7 +1,6 @@
-/** Human digest cadence: the human is updated only after 5 CONSECUTIVE
- * completed context windows (a window = one worker session completing or
- * auto-compacting, counted in WorkerReport.windowsUsed). Circuit breakers
- * still interrupt immediately — this cadence only paces routine updates. */
+/** Routine human digests follow completed context windows, counted in
+ * WorkerReport.windowsUsed (default threshold: 5). Every terminal exit
+ * emits a final digest, including diagnostics when integrity checks fail. */
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { Journal } from "./journal.js";
@@ -31,34 +30,52 @@ export interface DigestDeps {
   missionDir: string;
   wave: number;
   threshold?: number;
+  final?: boolean;
 }
 
 export async function composeDigest(deps: DigestDeps): Promise<string> {
   const { journal, ledgers, paper } = deps;
-  const know = await ledgers.knowledge(paper);
-  const results = await ledgers.results(paper);
-  const claims = await ledgers.claims(paper);
-  const solid = know.filter(r => r.status === "solid").length;
-  const openObligations = claims.filter(c => c.kind === "obligation" && c.status === "open");
+  const preflight = journal.ofType("preflight").at(-1);
+  const run = journal.ofType("run_started").at(-1);
+  let state: string[];
+  if (preflight && !preflight.ok) {
+    // Terminal integrity failures must remain reportable even when Python or
+    // a ledger is unreadable. Never render corrupt data as healthy counters.
+    state = ["Mission state unavailable: the latest preflight failed.",
+      ...preflight.unreadable.map(reason => `- ${reason}`)];
+  } else {
+    const [know, results, claims] = await Promise.all([
+      ledgers.knowledge(paper), ledgers.results(paper), ledgers.claims(paper),
+    ]);
+    const solid = know.filter(r => r.status === "solid").length;
+    const openObligations = claims.filter(c => c.kind === "obligation" && c.status === "open");
+    state = [
+      `- nodes: ${know.length} known, ${solid} solid`,
+      `- results: ${results.length} rows (latest per id)`,
+      `- open obligations: ${openObligations.length}`,
+      ...openObligations.slice(0, 10).map(o => `  - [${o.entry_id}] ${String(o.statement ?? "").slice(0, 120)}`),
+    ];
+  }
   const recent = waveHistory(journal).slice(-5);
   return [
     `# Human digest — ${paper} (wave ${deps.wave})`,
     ``,
-    `Routine update after ${windowsSinceLastDigest(journal)} completed context windows`,
+    `Run: ${run?.runId ?? "legacy (not recorded)"}`,
+    preflight ? `Preflight: ok=${preflight.ok}; breaks=${preflight.breaks}; unreadable=${preflight.unreadable.length}`
+      : `Preflight: not recorded`,
+    ``,
+    `${deps.final ? "Final" : "Routine"} update after ${windowsSinceLastDigest(journal)} completed context windows`,
     `(cadence: every ${deps.threshold ?? DIGEST_WINDOW_THRESHOLD}). Breakers interrupt immediately regardless.`,
     ``,
     `## Mission state (from the ledgers)`,
-    `- nodes: ${know.length} known, ${solid} solid`,
-    `- results: ${results.length} rows (latest per id)`,
-    `- open obligations: ${openObligations.length}`,
-    ...openObligations.slice(0, 10).map(o => `  - [${o.entry_id}] ${String(o.statement ?? "").slice(0, 120)}`),
+    ...state,
     ``,
     `## Recent waves`,
-    `| wave | scheduled | admitted | rejected | failed | no_progress |`,
-    `|---|---|---|---|---|---|`,
-    ...recent.map(w => `| ${w.wave} | ${w.scheduled.length} | ${w.admitted} | ${w.rejected} | ${w.failed} | ${w.noProgress} |`),
+    `| wave | scheduled | admitted | rejected | failed | no_progress | run |`,
+    `|---|---|---|---|---|---|---|`,
+    ...recent.map(w => `| ${w.wave} | ${w.scheduled.length} | ${w.admitted} | ${w.rejected} | ${w.failed} | ${w.noProgress} | ${w.runId ?? "legacy"} |`),
     ``,
-    `Full detail: the ledgers + \`progress/.../journal.jsonl\` (nothing in this file is canonical).`,
+    `Full detail: the ledgers + \`${journal.filePath}\` (nothing in this file is canonical).`,
     ``,
   ].join("\n");
 }
@@ -67,12 +84,13 @@ export async function maybeEmitDigest(deps: DigestDeps):
     Promise<{ emitted: boolean; windows: number; path?: string }> {
   const threshold = deps.threshold ?? DIGEST_WINDOW_THRESHOLD;
   const windows = windowsSinceLastDigest(deps.journal);
-  if (windows < threshold) return { emitted: false, windows };
+  if (!deps.final && windows < threshold) return { emitted: false, windows };
   const digestPath = path.join(deps.missionDir, "HUMAN_DIGEST.md");
   fs.mkdirSync(deps.missionDir, { recursive: true });
   fs.writeFileSync(digestPath, await composeDigest(deps), "utf-8");
   deps.journal.append({
     type: "digest_emitted", wave: deps.wave, afterWindows: windows, path: digestPath,
+    ...(deps.final ? { final: true as const } : {}),
   });
   return { emitted: true, windows, path: digestPath };
 }

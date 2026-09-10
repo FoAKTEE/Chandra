@@ -89,7 +89,11 @@ export type Message =
   | { type: "digest_emitted"; afterWindows: number; wave: number; path: string }
   | { type: "wave_committed"; wave: number; sha: string }
   | { type: "gate_decision"; wave: number; decision: string; noProgressStreak: number }
-  | { type: "halt"; reason: string; wave: number };
+  | { type: "halt"; reason: string; wave: number }
+  | { type: "run_started"; runId: string; startedAt: string; resumedFromWave: number }
+  | { type: "note_archived"; wave: number; path: string; bytes: number }
+  | { type: "digest_emitted"; afterWindows: number; wave: number; path: string; final: true }
+  | { type: "gate_decision"; wave: number; decision: string; noProgressStreak: number; lastProgress: [number, number, number] };
 
 export interface JournalEntry {
   at: string;

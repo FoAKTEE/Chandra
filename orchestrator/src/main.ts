@@ -2,6 +2,7 @@
  * mission completes or the gate halts. Light self-prompting: the orchestrator
  * holds only the journal tail + frontier — worker transcripts never enter it. */
 import * as path from "node:path";
+import { randomUUID } from "node:crypto";
 import { CodexJobRunner, CodexWorkerRunner, NoopWorkerRunner, SdkJobRunner, SdkWorkerRunner } from "./agents.js";
 import { buildMission, missionComplete, readyFrontier } from "./dag.js";
 import { DEFAULT_JOB_BUDGETS, cliProbes, readyJobs, runJobs,
@@ -153,11 +154,15 @@ export async function runMissionLoop(deps: MissionLoopDeps): Promise<number> {
     log("WARNING: commit-msg gate not installed (bash _common/hooks/install.sh) — wave commits will be un-gated");
   }
   const ledgers = new Ledgers(repoRoot);
-  // committed deliverables (three notes + digest) live under progress/;
+  // The three notes and digest live under progress/;
   // the journal is an operational diary and lives OUTSIDE the repo.
   const missionDir = path.join(repoRoot, "progress", "orchestrator", `paper_${paper}`);
   const journal = new Journal(path.join(
     runtimeDir(repoRoot, `paper_${paper}`), "journal.jsonl"));
+  const resumedFromWave = journal.ofType("wave_finished").at(-1)?.wave ?? 0;
+  const lastGate = journal.ofType("gate_decision").at(-1);
+  journal.append({ type: "run_started", runId: randomUUID(),
+    startedAt: new Date().toISOString(), resumedFromWave });
   const layout = notesLayout(repoRoot, path.join("orchestrator", `paper_${paper}`));
   let gateState: GateState | null = null;
   let packetSize = deps.packetSize ?? 4;
@@ -181,8 +186,10 @@ export async function runMissionLoop(deps: MissionLoopDeps): Promise<number> {
     return null;
   };
 
-  let wave = 0;
-  try {
+  let wave = resumedFromWave;
+  const emitFinal = () => maybeEmitDigest({ journal, ledgers, paper, missionDir, wave,
+    threshold: deps.digestThreshold, final: true });
+  const execute = async (): Promise<number> => {
     const startupFailure = await checkPreflight(wave);
     if (startupFailure !== null) return startupFailure;
     const initial = buildMission(paper, await ledgers.knowledge(paper), await ledgers.claims(paper));
@@ -190,6 +197,18 @@ export async function runMissionLoop(deps: MissionLoopDeps): Promise<number> {
       type: "mission_loaded", paper, nodes: initial.size,
       solid: [...initial.values()].filter(n => n.status === "solid").length,
     });
+    if (lastGate) {
+      // Older journals have only the streak. Use current verified counters
+      // as their restart baseline; new journals retain the exact gate signal.
+      const signal = "lastProgress" in lastGate ? null : await gateSignal(ledgers, paper);
+      gateState = {
+        // Legacy runs reset wave numbers, sometimes stopping before their
+        // next gate record. Compare the new signal on the resumed timeline.
+        lastWave: resumedFromWave, noProgressStreak: lastGate.noProgressStreak,
+        lastProgress: "lastProgress" in lastGate ? lastGate.lastProgress
+          : [signal!.solidNodes, signal!.admittedResults, signal!.dischargedObligations],
+      };
+    }
 
     const probes = deps.probes ?? cliProbes(repoRoot);
     const jobRunners = {
@@ -198,7 +217,8 @@ export async function runMissionLoop(deps: MissionLoopDeps): Promise<number> {
       "write-refresh": deps.jobRunners?.["write-refresh"] ?? new SdkJobRunner(),
     };
 
-    for (wave = 1; wave <= maxWaves; wave++) {
+    for (let wavesThisRun = 0; wavesThisRun < maxWaves; wavesThisRun++) {
+      wave = resumedFromWave + wavesThisRun + 1;
       const waveFailure = await checkPreflight(wave);
       if (waveFailure !== null) return waveFailure;
       // human control channel: PAUSE halts gracefully; STEER.md reaches prompts
@@ -281,16 +301,13 @@ export async function runMissionLoop(deps: MissionLoopDeps): Promise<number> {
       if (gateFailure !== null) return gateFailure;
       gateState = advanceGate(gateState, wave, await gateSignal(ledgers, paper));
       const decision = decideGate(gateState, DEFAULT_BUDGETS);
-      journal.append({ type: "gate_decision", wave, decision: decision.decision, noProgressStreak: gateState.noProgressStreak });
+      journal.append({ type: "gate_decision", wave, decision: decision.decision,
+        noProgressStreak: gateState.noProgressStreak, lastProgress: gateState.lastProgress });
       if (decision.decision !== "continue") {
         const failure = await halt(wave, decision.reason, `halt: ${decision.reason}`);
         if (failure !== null) return failure;
         return 4;
       }
-      // human digest only after N completed context windows (default 5)
-      const digestFailure = await checkPreflight(wave);
-      if (digestFailure !== null) return digestFailure;
-      await maybeEmitDigest({ journal, ledgers, paper, missionDir, wave, threshold: deps.digestThreshold });
       // tamper-evidence: a broken ledger hash chain halts the mission COLD
       const chains = await ledgers.verifyChains();
       if (!chains.ok) {
@@ -299,6 +316,11 @@ export async function runMissionLoop(deps: MissionLoopDeps): Promise<number> {
         if (failure !== null) return failure;
         return 8;
       }
+      // Routine digests follow integrity verification. Terminal exits below
+      // get a final digest independently of this context-window cadence.
+      const digestFailure = await checkPreflight(wave);
+      if (digestFailure !== null) return digestFailure;
+      await maybeEmitDigest({ journal, ledgers, paper, missionDir, wave, threshold: deps.digestThreshold });
       // substage-commit enforcement: zone-1 changes are committed EVERY wave;
       // a rejected commit halts the mission rather than piling up dirty state.
       try {
@@ -312,9 +334,16 @@ export async function runMissionLoop(deps: MissionLoopDeps): Promise<number> {
       }
       if (deps.dryRun) return (await checkPreflight(wave)) ?? 0; // one planning wave is enough
     }
-    const finalFailure = await checkPreflight(Math.max(0, wave - 1));
+    const finalFailure = await checkPreflight(wave);
     if (finalFailure !== null) return finalFailure;
     return 2;
+  };
+  try {
+    const code = await execute();
+    // Every terminal return records its preflight before this final view.
+    // Failed checks compose diagnostics without reading unhealthy ledgers.
+    await emitFinal();
+    return code;
   } catch (e) {
     if (!(e instanceof LedgerError)) throw e;
     // A read can fail after a successful preflight. Retain that failure even
@@ -322,7 +351,9 @@ export async function runMissionLoop(deps: MissionLoopDeps): Promise<number> {
     const report = await ledgers.preflight(paper);
     report.ok = false;
     report.unreadable.push(e.message);
-    return recordPreflight(wave, report)!;
+    const failure = recordPreflight(wave, report)!;
+    await emitFinal();
+    return failure;
   }
 }
 

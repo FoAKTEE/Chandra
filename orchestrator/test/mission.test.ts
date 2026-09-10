@@ -245,9 +245,11 @@ test("toy mission end-to-end: parallel frontier, reject->repair->admit, notes, d
 
   // --- digest cadence: 2 windows/worker -> 4 after wave 1, 6 after wave 2 --
   const digests = journal.ofType("digest_emitted");
-  assert.equal(digests.length, 1, "exactly one digest in this run");
+  assert.equal(digests.length, 2, "one routine digest and one final digest in this run");
   assert.equal(digests[0].wave, 2);
   assert.ok(digests[0].afterWindows >= 5);
+  assert.equal(digests[1].wave, 4);
+  assert.equal((digests[1] as typeof digests[number] & { final?: boolean }).final, true);
   assert.match(fs.readFileSync(digests[0].path, "utf-8"), /Human digest/);
 
   // --- gate stayed green the whole run -------------------------------------
@@ -255,7 +257,7 @@ test("toy mission end-to-end: parallel frontier, reject->repair->admit, notes, d
     assert.equal(g.decision, "continue");
   }
 
-  // --- substage-commit enforcement: one commit per changing wave, tree clean --
+  // --- substage-commit enforcement: wave changes committed; terminal view follows --
   const commits = journal.ofType("wave_committed");
   assert.ok(commits.length >= 2, `expected >=2 wave commits, got ${commits.length}`);
   const gitLog = execFileSync("git", ["-C", repo, "log", "--format=%s"], { encoding: "utf-8" });
@@ -267,7 +269,8 @@ test("toy mission end-to-end: parallel frontier, reject->repair->admit, notes, d
   assert.ok(waveFiles.includes(skillPath), "the wave commit carries the admitted skill");
   assert.ok(waveFiles.includes(".claude/skills/INDEX.md"), "the generated index is committed with the skill");
   const dirty = execFileSync("git", ["-C", repo, "status", "--porcelain"], { encoding: "utf-8" });
-  assert.equal(dirty.trim(), "", "working tree must be clean after the mission");
+  assert.equal(dirty.trim(), `M progress/orchestrator/paper_${P}/HUMAN_DIGEST.md`,
+    "only the final digest, written after the terminal preflight, follows the wave commits");
 });
 
 test("a mission refuses to start outside a git repo (enforcement, not advice)", async () => {

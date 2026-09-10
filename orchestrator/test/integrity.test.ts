@@ -329,7 +329,12 @@ for (const boundary of ["digest", "gate_halt"] as const) {
       } },
     }), 8);
     assertIntegrityHalt(journal, /ledger_tampered:/);
-    assert.deepEqual(journal.ofType("digest_emitted"), []);
+    const digests = journal.ofType("digest_emitted");
+    assert.equal(digests.length, 1, "only the final diagnostic digest may be emitted");
+    assert.equal((digests[0] as typeof digests[number] & { final?: boolean }).final, true);
+    const digest = fs.readFileSync(digests[0].path, "utf-8");
+    assert.match(digest, /Preflight: ok=false; breaks=1; unreadable=0/);
+    assert.ok(!digest.includes("nodes: 1 known"), "a broken ledger cannot supply healthy mission state");
   });
 }
 

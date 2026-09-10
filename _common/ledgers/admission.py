@@ -30,13 +30,14 @@ Escape hatches are explicit keyword/CLI flags and are recorded on the row in
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 import re
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from .txn import holds_lock, ledger_lock, read_lock
 
 OUTPUT_TAIL_CHARS = 2000
 DEFAULT_TIMEOUT_S = 300
@@ -189,18 +190,15 @@ def find_knowledge_node(node_id: str, repo_root: str | Path,
     (covers cross-paper `PAPER::node` and `_shared::` ids)."""
     root = Path(repo_root)
     from . import ledger_common as _lc  # safe: ledger_common imports nothing from ledgers
-    files: list[Path] = []
-    if paper_hint:
-        files.append(_lc.db_dir(root, "knowledge", paper_hint) / "nodes.jsonl")
-    files.extend(d / "nodes.jsonl" for _, d in _lc.iter_paper_dirs(root, "knowledge")
-                 if d / "nodes.jsonl" not in files)
-    for f in files:
-        if not f.is_file():
-            continue
-        rows = [json.loads(line) for line in f.read_text().splitlines() if line.strip()]
-        hit = _latest_non_amended(rows, node_id)
-        if hit is not None:
-            return hit
+    with read_lock(root):
+        papers = [paper_hint] if paper_hint else []
+        papers.extend(paper for paper, _ in _lc.iter_paper_dirs(root, "knowledge")
+                      if paper != paper_hint)
+        for paper in papers:
+            rows = _lc.read_jsonl(root, "knowledge", paper, "nodes.jsonl")
+            hit = _latest_non_amended(rows, node_id)
+            if hit is not None:
+                return hit
     return None
 
 
@@ -215,6 +213,10 @@ def _execute_if_present(row: dict[str, Any], root: Path, *, skip_exec: bool) -> 
     if skip_exec:
         _flag(row, "skip_exec")
         return None
+    if holds_lock(root):
+        raise AdmissionError(
+            "verification.command must run outside the ledger lock; "
+            "call append_row/append_batch without an enclosing lock")
     outcome = run_verification(spec, root)
     if outcome["exit_code"] != 0:
         tail = outcome["output_tail"].strip().splitlines()[-1:] or [""]
@@ -224,13 +226,41 @@ def _execute_if_present(row: dict[str, Any], root: Path, *, skip_exec: bool) -> 
     return outcome
 
 
+def prepare_verifications(rows: list[dict[str, Any]], root: Path, *, skip_exec: bool):
+    """Execute every batch verifier before locking, retaining outcomes in memory.
+
+    Defer a verifier rejection until that row is reached in the locked append
+    loop, so the existing partial-prefix failure contract is preserved. These
+    observations are passed explicitly, never trusted from input row fields.
+    """
+    prepared = []
+    for source in rows:
+        row = dict(source) if isinstance(source, dict) else source
+        try:
+            executed = _execute_if_present(row, root, skip_exec=skip_exec)
+        except Exception as exc:
+            executed = exc
+        prepared.append((row, executed))
+    return prepared
+
+
 def check_result_admission(row: dict[str, Any], repo_root: str | Path | None, *,
                            skip_exec: bool = False,
                            allow_missing_deps: bool = False) -> dict[str, Any]:
-    """Executable stage-4 admission. Mutates and returns the row."""
+    """Run verification outside the lock, then check current state under it."""
     root = Path(repo_root) if repo_root else Path.cwd()
-    check_actor_role(row, root)
     executed = _execute_if_present(row, root, skip_exec=skip_exec)
+    with ledger_lock(root):
+        return _check_result_state(row, root, executed, allow_missing_deps=allow_missing_deps)
+
+
+def _check_result_state(row: dict[str, Any], root: Path,
+                        executed: dict[str, Any] | Exception | None, *,
+                        allow_missing_deps: bool = False) -> dict[str, Any]:
+    """Re-validate a result's read set. Caller holds ledger_lock through append."""
+    check_actor_role(row, root)
+    if isinstance(executed, Exception):
+        raise executed
     if executed is not None:
         row["verifier_result"]["execution"] = executed
         if row["verifier_result"].get("verdict") == "fail":
@@ -268,10 +298,20 @@ def check_result_admission(row: dict[str, Any], repo_root: str | Path | None, *,
 def check_knowledge_admission(row: dict[str, Any], repo_root: str | Path | None, *,
                               skip_exec: bool = False,
                               allow_missing_deps: bool = False) -> dict[str, Any]:
-    """Executable knowledge-node admission. Mutates and returns the row."""
+    """Run verification outside the lock, then check current state under it."""
     root = Path(repo_root) if repo_root else Path.cwd()
-    check_actor_role(row, root)
     executed = _execute_if_present(row, root, skip_exec=skip_exec)
+    with ledger_lock(root):
+        return _check_knowledge_state(row, root, executed, allow_missing_deps=allow_missing_deps)
+
+
+def _check_knowledge_state(row: dict[str, Any], root: Path,
+                           executed: dict[str, Any] | Exception | None, *,
+                           allow_missing_deps: bool = False) -> dict[str, Any]:
+    """Re-validate a node's read set. Caller holds ledger_lock through append."""
+    check_actor_role(row, root)
+    if isinstance(executed, Exception):
+        raise executed
     if executed is not None:
         row["verification_run"] = executed
 

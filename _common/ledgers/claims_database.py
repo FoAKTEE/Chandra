@@ -172,16 +172,15 @@ def check_refs(row: dict[str, Any], repo_root: str | Path | None, *,
 def append_row(row: dict[str, Any], *, repo_root: str | Path | None = None,
                allow_missing_refs: bool = False) -> dict[str, Any]:
     root = Path(repo_root) if repo_root else Path.cwd()
-    row.setdefault("timestamp", utc_now_iso())
-    row.setdefault("git_commit", lc.git_commit_short(root))
-    validate(row)
-    adm.check_actor_role(row, root)
-    check_refs(row, root, allow_missing_refs=allow_missing_refs)
-
-    db_dir = lc.db_dir(root, "claim", row["paper"])
-    db_dir.mkdir(parents=True, exist_ok=True)
-    lc.chain_append(db_dir, "entries.jsonl", row)
-    regenerate_summary(db_dir)
+    with lc.ledger_lock(root):
+        row.setdefault("timestamp", utc_now_iso())
+        row.setdefault("git_commit", lc.git_commit_short(root))
+        validate(row)
+        adm.check_actor_role(row, root)
+        check_refs(row, root, allow_missing_refs=allow_missing_refs)
+        db_dir = lc.db_dir(root, "claim", row["paper"])
+        lc.chain_append(db_dir, "entries.jsonl", row)
+        regenerate_summary(db_dir)
     return row
 
 
@@ -192,22 +191,24 @@ def append_batch(rows: list[dict[str, Any]], *, repo_root: str | Path | None = N
     skipped unless `force=True`."""
     if not isinstance(rows, list):
         raise ValueError("rows must be a JSON array of entry objects")
+    root = Path(repo_root) if repo_root else Path.cwd()
     by_paper: dict[str, list[dict[str, Any]]] = {}
     for r in rows:
         by_paper.setdefault(r.get("paper", "?"), []).append(r)
     appended = skipped = 0
-    for paper, prows in by_paper.items():
-        existing = {r["entry_id"]: r for r in read_entries(repo_root, paper) if "entry_id" in r}
-        for row in prows:
-            cur = existing.get(row.get("entry_id"))
-            if (not force and cur and cur.get("status") == row.get("status")
-                    and cur.get("statement") == row.get("statement")):
-                skipped += 1
-                continue
-            written = append_row(dict(row), repo_root=repo_root,
-                                 allow_missing_refs=allow_missing_refs)
-            existing[written["entry_id"]] = written
-            appended += 1
+    with lc.ledger_lock(root):
+        for paper, prows in by_paper.items():
+            existing = {r["entry_id"]: r for r in read_entries(root, paper) if "entry_id" in r}
+            for row in prows:
+                cur = existing.get(row.get("entry_id"))
+                if (not force and cur and cur.get("status") == row.get("status")
+                        and cur.get("statement") == row.get("statement")):
+                    skipped += 1
+                    continue
+                written = append_row(dict(row), repo_root=root,
+                                     allow_missing_refs=allow_missing_refs)
+                existing[written["entry_id"]] = written
+                appended += 1
     return {"appended": appended, "skipped": skipped, "papers": sorted(by_paper)}
 
 

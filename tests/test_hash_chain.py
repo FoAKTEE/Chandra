@@ -68,3 +68,13 @@ def test_verify_all_chains_reports_the_breaking_ledger(tmp_path):
     report = lc.verify_all_chains(tmp_path)
     assert report["ok"] is False
     assert report["breaks"][0]["db"] == "knowledge"
+
+
+def test_incomplete_tail_is_distinct_from_hash_mismatch(tmp_path):
+    kdb.append_row(valid_knowledge_row(), repo_root=tmp_path)
+    path = _ledger(tmp_path) / "nodes.jsonl"
+    # Even valid JSON is uncommitted without the terminating newline.
+    path.write_bytes(path.read_bytes().rstrip(b"\n"))
+    report = lc.verify_chain(_ledger(tmp_path), "nodes.jsonl")
+    assert report["ok"] is False
+    assert report["reason"] == "incomplete tail (crash mid-write)"

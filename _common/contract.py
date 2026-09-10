@@ -18,7 +18,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from _common.ledgers import admission, claims_database, error_database  # noqa: E402
-from _common.ledgers import ledger_common  # noqa: E402
+from _common.ledgers import ledger_common, txn  # noqa: E402
 from _common.ledgers import knowledge_database, result_database  # noqa: E402
 from _common.loop import loop_gate, loop_policy  # noqa: E402
 
@@ -33,6 +33,7 @@ LEDGER_FILES = {
 def manifest() -> dict:
     return {
         "contract_version": 1,
+        "lock": {"path": txn.LOCK_PATH, "timeout_env": txn.TIMEOUT_ENV},
         "delegation": {
             "env_var": admission.ROLE_ENV_VAR,
             "allowed_roles": list(admission.ROLE_ENV_ALLOWED),

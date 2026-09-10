@@ -129,31 +129,31 @@ def validate(row: dict[str, Any]) -> None:
 def append_row(row: dict[str, Any], *, repo_root: str | Path | None = None,
                skip_exec: bool = False, allow_missing_deps: bool = False) -> dict[str, Any]:
     root = Path(repo_root) if repo_root else Path.cwd()
-    row.setdefault("timestamp", utc_now_iso())
-    row.setdefault("git_commit", lc.git_commit_short(root))
     validate(row)
-    adm.check_result_admission(row, root, skip_exec=skip_exec,
-                               allow_missing_deps=allow_missing_deps)
-
-    db_dir = lc.db_dir(root, "result", row["paper"])
-    db_dir.mkdir(parents=True, exist_ok=True)
-    lc.chain_append(db_dir, "results.jsonl", row)
-    regenerate_summary(db_dir)
+    executed = adm._execute_if_present(row, root, skip_exec=skip_exec)
+    with lc.ledger_lock(root):
+        _append_verified_row(row, root, executed, allow_missing_deps=allow_missing_deps)
+        regenerate_summary(lc.db_dir(root, "result", row["paper"]))
     return row
 
 
 def _append_row_nosummary(row: dict[str, Any], *, repo_root: str | Path | None = None,
                           skip_exec: bool = False, allow_missing_deps: bool = False) -> dict[str, Any]:
     root = Path(repo_root) if repo_root else Path.cwd()
-    row.setdefault("timestamp", utc_now_iso())
-    row.setdefault("git_commit", lc.git_commit_short(root))
     validate(row)
-    adm.check_result_admission(row, root, skip_exec=skip_exec,
-                               allow_missing_deps=allow_missing_deps)
-    db_dir = lc.db_dir(root, "result", row["paper"])
-    db_dir.mkdir(parents=True, exist_ok=True)
-    lc.chain_append(db_dir, "results.jsonl", row)
-    return row
+    executed = adm._execute_if_present(row, root, skip_exec=skip_exec)
+    return _append_verified_row(row, root, executed, allow_missing_deps=allow_missing_deps)
+
+
+def _append_verified_row(row, root, executed, *, allow_missing_deps=False):
+    with lc.ledger_lock(root):
+        row.setdefault("timestamp", utc_now_iso())
+        row.setdefault("git_commit", lc.git_commit_short(root))
+        validate(row)
+        adm._check_result_state(row, root, executed, allow_missing_deps=allow_missing_deps)
+        db_dir = lc.db_dir(root, "result", row["paper"])
+        lc.chain_append(db_dir, "results.jsonl", row)
+        return row
 
 
 def append_batch(rows: list[dict[str, Any]], *, repo_root: str | Path | None = None,
@@ -164,19 +164,20 @@ def append_batch(rows: list[dict[str, Any]], *, repo_root: str | Path | None = N
     (report shows appended count + the failing row)."""
     if not isinstance(rows, list):
         raise ValueError("rows must be a JSON array of result rows")
+    root = Path(repo_root) if repo_root else Path.cwd()
+    prepared = adm.prepare_verifications(rows, root, skip_exec=skip_exec)
     appended = 0
     papers: set[str] = set()
-    try:
-        for row in rows:
-            written = _append_row_nosummary(dict(row), repo_root=repo_root,
-                                            skip_exec=skip_exec,
-                                            allow_missing_deps=allow_missing_deps)
-            papers.add(written["paper"])
-            appended += 1
-    finally:
-        root = Path(repo_root) if repo_root else Path.cwd()
-        for paper in papers:
-            regenerate_summary(lc.db_dir(root, "result", paper))
+    with lc.ledger_lock(root):
+        try:
+            for row, executed in prepared:
+                written = _append_verified_row(dict(row), root, executed,
+                                               allow_missing_deps=allow_missing_deps)
+                papers.add(written["paper"])
+                appended += 1
+        finally:
+            for paper in papers:
+                regenerate_summary(lc.db_dir(root, "result", paper))
     return {"appended": appended, "of": len(rows), "papers": sorted(papers)}
 
 

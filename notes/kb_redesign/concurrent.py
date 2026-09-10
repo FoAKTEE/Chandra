@@ -1,4 +1,4 @@
-"""P11: parallel appends to one ledger with no lock corrupt the hash chain. Run from the repo root: python3 notes/kb_redesign/concurrent.py"""
+"""P11 regression: parallel appends now pass with valid chains under the repository transaction lock. Run from the repo root: python3 notes/kb_redesign/concurrent.py"""
 import json, os, subprocess, sys, tempfile
 from multiprocessing import Process
 from pathlib import Path

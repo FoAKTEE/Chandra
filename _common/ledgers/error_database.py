@@ -367,18 +367,9 @@ def append_row(row: dict[str, Any], *, repo_root: str | Path | None = None) -> d
     Auto-fills `timestamp` and `git_commit` if absent. Regenerates summary.csv.
     """
     root = Path(repo_root) if repo_root else Path.cwd()
-    row.setdefault("timestamp", utc_now_iso())
-    row.setdefault("git_commit", git_commit_short(root))
-    validate(row)
-    adm.check_actor_role(row, root)  # trials are work too: delegation policy applies
-    if row.get("node_id") and "node_seq" not in row:   # number this trial 1,2,3… under its DAG node
-        existing = read_entries(root, row["paper"])
-        row["node_seq"] = 1 + sum(1 for r in existing if r.get("node_id") == row.get("node_id"))
-
-    db_dir = lc.db_dir(root, "error", row["paper"])
-    db_dir.mkdir(parents=True, exist_ok=True)
-    lc.chain_append(db_dir, "trials.jsonl", row)
-    regenerate_summary(db_dir)
+    with lc.ledger_lock(root):
+        _append_row_nosummary(row, repo_root=root)
+        regenerate_summary(lc.db_dir(root, "error", row["paper"]))
     return row
 
 
@@ -397,34 +388,34 @@ def append_batch(rows, *, repo_root=None):
     (append-only: earlier rows remain)."""
     if not isinstance(rows, list):
         raise ValueError("rows must be a JSON array of trial rows")
-    from pathlib import Path as _P
+    root = Path(repo_root) if repo_root else Path.cwd()
     appended = 0
     papers = set()
-    try:
-        for row in rows:
-            written = _append_row_nosummary(dict(row), repo_root=repo_root)
-            papers.add(written["paper"])
-            appended += 1
-    finally:
-        root = _P(repo_root) if repo_root else _P.cwd()
-        for paper in papers:
-            regenerate_summary(lc.db_dir(root, "error", paper))
+    with lc.ledger_lock(root):
+        try:
+            for row in rows:
+                written = _append_row_nosummary(dict(row), repo_root=root)
+                papers.add(written["paper"])
+                appended += 1
+        finally:
+            for paper in papers:
+                regenerate_summary(lc.db_dir(root, "error", paper))
     return {"appended": appended, "of": len(rows), "papers": sorted(papers)}
 
 
 def _append_row_nosummary(row, *, repo_root=None):
     root = Path(repo_root) if repo_root else Path.cwd()
-    row.setdefault("timestamp", utc_now_iso())
-    row.setdefault("git_commit", git_commit_short(root))
-    validate(row)
-    adm.check_actor_role(row, root)
-    if row.get("node_id") and "node_seq" not in row:
-        existing = read_entries(root, row["paper"])
-        row["node_seq"] = 1 + sum(1 for r in existing if r.get("node_id") == row.get("node_id"))
-    db_dir = lc.db_dir(root, "error", row["paper"])
-    db_dir.mkdir(parents=True, exist_ok=True)
-    lc.chain_append(db_dir, "trials.jsonl", row)
-    return row
+    with lc.ledger_lock(root):
+        row.setdefault("timestamp", utc_now_iso())
+        row.setdefault("git_commit", git_commit_short(root))
+        validate(row)
+        adm.check_actor_role(row, root)
+        if row.get("node_id") and "node_seq" not in row:
+            existing = read_entries(root, row["paper"])
+            row["node_seq"] = 1 + sum(1 for r in existing if r.get("node_id") == row.get("node_id"))
+        db_dir = lc.db_dir(root, "error", row["paper"])
+        lc.chain_append(db_dir, "trials.jsonl", row)
+        return row
 
 
 def regenerate_summary(db_dir: Path) -> None:

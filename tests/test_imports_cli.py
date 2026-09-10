@@ -19,6 +19,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 PACKAGE_MODULES = [
     "_common.ledgers.ledger_common",
+    "_common.ledgers.txn",
     "_common.ledgers.admission",
     "_common.ledgers.error_database",
     "_common.ledgers.knowledge_database",

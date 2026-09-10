@@ -203,20 +203,24 @@ def append_row(row: dict[str, Any], *, repo_root: str | Path | None = None,
     predecessors — see `_common/ledgers/admission.py`.
     """
     root = Path(repo_root) if repo_root else Path.cwd()
-    row.setdefault("timestamp", utc_now_iso())
-    row.setdefault("git_commit", git_commit_short(root))
     validate(row)
-    adm.check_knowledge_admission(row, root, skip_exec=skip_exec,
-                                  allow_missing_deps=allow_missing_deps)
-    if "node_seq" not in row:                       # number this record 1,2,3… under its DAG node
-        existing = read_entries(root, row["paper"])
-        row["node_seq"] = 1 + sum(1 for r in existing if r.get("node_id") == row["node_id"])
+    executed = adm._execute_if_present(row, root, skip_exec=skip_exec)
+    return _append_verified_row(row, root, executed, allow_missing_deps=allow_missing_deps)
 
-    db_dir = lc.db_dir(root, "knowledge", row["paper"])
-    db_dir.mkdir(parents=True, exist_ok=True)
-    lc.chain_append(db_dir, "nodes.jsonl", row)
-    regenerate_summary(db_dir)
-    return row
+
+def _append_verified_row(row, root, executed, *, allow_missing_deps=False):
+    with lc.ledger_lock(root):
+        row.setdefault("timestamp", utc_now_iso())
+        row.setdefault("git_commit", git_commit_short(root))
+        validate(row)
+        adm._check_knowledge_state(row, root, executed, allow_missing_deps=allow_missing_deps)
+        if "node_seq" not in row:  # allocate under the same lock as the chain head
+            existing = read_entries(root, row["paper"])
+            row["node_seq"] = 1 + sum(1 for r in existing if r.get("node_id") == row["node_id"])
+        db_dir = lc.db_dir(root, "knowledge", row["paper"])
+        lc.chain_append(db_dir, "nodes.jsonl", row)
+        regenerate_summary(db_dir)
+        return row
 
 
 def append_batch(rows: list[dict[str, Any]], *, repo_root: str | Path | None = None,
@@ -230,22 +234,25 @@ def append_batch(rows: list[dict[str, Any]], *, repo_root: str | Path | None = N
     """
     if not isinstance(rows, list):
         raise ValueError("rows must be a JSON array of node objects")
-    by_paper: dict[str, list[dict[str, Any]]] = {}
-    for r in rows:
-        by_paper.setdefault(r.get("paper", "?"), []).append(r)
+    root = Path(repo_root) if repo_root else Path.cwd()
+    prepared = adm.prepare_verifications(rows, root, skip_exec=skip_exec)
+    by_paper: dict[str, list] = {}
+    for row, executed in prepared:
+        by_paper.setdefault(row.get("paper", "?"), []).append((row, executed))
     appended = skipped = 0
-    for paper, prows in by_paper.items():
-        existing = read_entries(repo_root, paper)
-        for row in prows:
-            if not force:
-                cur = latest_status(existing, paper, row.get("node_id", ""))
-                if cur and cur.get("status") == row.get("status") and cur.get("summary") == row.get("summary"):
-                    skipped += 1
-                    continue
-            written = append_row(dict(row), repo_root=repo_root, skip_exec=skip_exec,
-                                 allow_missing_deps=allow_missing_deps)
-            existing.append(written)
-            appended += 1
+    with lc.ledger_lock(root):
+        for paper, prows in by_paper.items():
+            existing = read_entries(root, paper)
+            for row, executed in prows:
+                if not force:
+                    cur = latest_status(existing, paper, row.get("node_id", ""))
+                    if cur and cur.get("status") == row.get("status") and cur.get("summary") == row.get("summary"):
+                        skipped += 1
+                        continue
+                written = _append_verified_row(row, root, executed,
+                                               allow_missing_deps=allow_missing_deps)
+                existing.append(written)
+                appended += 1
     return {"appended": appended, "skipped": skipped, "papers": sorted(by_paper)}
 
 

@@ -20,11 +20,11 @@ A row corresponds to one node in the consumer's `logic.md` DAG. The DAG
 shape is captured via the `predecessors[]` field. Multiple rows accrue
 UNDER one node (auto-numbered `node_seq` 1,2,3… — the doubly-linked list
 under the DAG node, not new nodes); the latest non-amended row is the
-node's current status. State markers
-(`[SOLID]` / `[PRELIMINARY]` / `[HYPOTHESIS]` / `[BLOCKING]` / `[FUTURE]`)
+node's current status; retired nodes disappear from active views. State markers
+(`[SOLID]` / `[PRELIMINARY]` / `[HYPOTHESIS]` / `[BLOCKING]` / `[FUTURE]` / `[RETIRED]`)
 are first-class fields, not prose; the figure's `●` (exist) / `○`
 (not-exist) distinction is `status ∈ {solid, preliminary, hypothesis}`
-vs. `status ∈ {blocking, future}` respectively.
+vs. `status ∈ {blocking, future, retired}` respectively.
 
 USAGE
     python _common/knowledge_database.py schema                  # required/optional fields + enums
@@ -40,9 +40,11 @@ USAGE
 the agent self-corrects from the error message.
 
 APPEND-ONLY DISCIPLINE
-    * Never delete a row. To correct or demote, append a new row with
-      status="amended" or the new status, citing the prior row's
-      (timestamp, git_commit) in `notes`.
+    * Never delete a row. Semantic changes require `supersedes` naming a prior
+      row_hash of the same paper/node_id. Status-only promotions/demotions are
+      free. Legacy status="amended" is deprecated: it remains an ignored
+      correction pointer, not a redirect. Use `retired` to remove an active
+      node; live dependents require the recorded --allow-dependents bypass.
     * Promotions (hypothesis → preliminary → solid) are appended as
       new rows, not in-place edits. The latest row for a (paper, node_id)
       is the current status.
@@ -98,10 +100,11 @@ DOMAINS = ("symbolic", "numerical", "proof", "software")
 # Status values. `solid` / `preliminary` / `hypothesis` are EXIST states (●);
 # `blocking` / `future` are NOT-EXIST states (○) — placeholders for nodes
 # the loop has identified but not yet derived. `amended` is a correction
-# pointer to a prior row.
-STATUSES = ("hypothesis", "preliminary", "solid", "blocking", "future", "amended")
+# pointer to a prior row, deprecated in favor of supersedes. `retired` removes
+# a node from active views while preserving its history.
+STATUSES = ("hypothesis", "preliminary", "solid", "blocking", "future", "amended", "retired")
 EXIST_STATUSES = ("solid", "preliminary", "hypothesis")
-NONEXIST_STATUSES = ("blocking", "future")
+NONEXIST_STATUSES = ("blocking", "future", "retired")
 
 # Risk tiers from code_quality.py (carried for downstream filtering).
 RISK_TIERS = ("R0", "R1", "R2", "R3", "R4")
@@ -111,6 +114,7 @@ REQUIRED_FIELDS = {
 }
 REQUIRED_ON_SOLID = {"evidence"}
 AUTO_FILLED = {"timestamp", "git_commit"}
+SEMANTIC_KEY = ("summary", "predecessors", "domain", "equation_labels")
 
 # Per-field one-line semantics — queryable via `describe-fields`.
 FIELD_DESCRIPTIONS: dict[str, tuple[str, str]] = {
@@ -118,10 +122,11 @@ FIELD_DESCRIPTIONS: dict[str, tuple[str, str]] = {
     "timestamp":         ("ISO-8601 UTC",  "auto-filled"),
     "paper":             ("string",        "arxiv-XXXX.XXXXX"),
     "node_id":           ("string",        "matches logic.md node id"),
+    "supersedes":        ("string",        "optional prior row_hash in this ledger, paper and node_id; required when the semantic key changes"),
     "task_id":           ("string",        "matches implementation.md §0"),
     "git_commit":        ("string",        "short SHA, auto-filled"),
     "domain":            ("enum",          "symbolic / numerical / proof / software"),
-    "status":            ("enum",          "hypothesis / preliminary / solid / blocking / future / amended"),
+    "status":            ("enum",          "hypothesis / preliminary / solid / blocking / future / amended (deprecated pointer) / retired"),
     "summary":           ("string",        "one-line description of the node"),
     # conditional-required on status=solid
     "evidence":          ("string",        "verifier output path or commit citation"),
@@ -143,7 +148,7 @@ FIELD_DESCRIPTIONS: dict[str, tuple[str, str]] = {
     "verification":      ("object",        "{command, timeout_s?, cwd?} — RUN at append; exit 0 required; outcome recorded in verification_run"),
     "verification_run":  ("object",        "auto-filled observed outcome of the verification command"),
     "evidence_sha256":   ("string",        "auto-filled content hash when evidence names an existing file"),
-    "admission_flags":   ("array",         "auto-filled bypass record (skip_exec / allow_missing_deps) — visible, never silent"),
+    "admission_flags":   ("array",         "auto-filled bypass record (skip_exec / allow_missing_deps / allow_dependents) — visible, never silent"),
 }
 
 
@@ -161,6 +166,7 @@ git_commit_short = lc.git_commit_short
 
 def validate(row: dict[str, Any]) -> None:
     """Raise ValueError on schema violation. Allowed values quoted in the message."""
+    adm.validate_revision_fields(row)
     missing = REQUIRED_FIELDS - row.keys()
     if missing:
         raise ValueError(f"missing required fields: {sorted(missing)}")
@@ -194,7 +200,8 @@ def validate(row: dict[str, Any]) -> None:
 # --- core API ---------------------------------------------------------------
 
 def append_row(row: dict[str, Any], *, repo_root: str | Path | None = None,
-               skip_exec: bool = False, allow_missing_deps: bool = False) -> dict[str, Any]:
+               skip_exec: bool = False, allow_missing_deps: bool = False,
+               allow_dependents: bool = False) -> dict[str, Any]:
     """Validate + run the executable admission gate + auto-fill + append.
 
     Auto-fills `timestamp` and `git_commit` if absent. Regenerates summary.csv.
@@ -205,17 +212,25 @@ def append_row(row: dict[str, Any], *, repo_root: str | Path | None = None,
     root = Path(repo_root) if repo_root else Path.cwd()
     validate(row)
     executed = adm._execute_if_present(row, root, skip_exec=skip_exec)
-    return _append_verified_row(row, root, executed, allow_missing_deps=allow_missing_deps)
+    return _append_verified_row(row, root, executed, allow_missing_deps=allow_missing_deps,
+                                allow_dependents=allow_dependents)
 
 
-def _append_verified_row(row, root, executed, *, allow_missing_deps=False):
+def _append_verified_row(row, root, executed, *, allow_missing_deps=False,
+                         allow_dependents=False, deduplicate=False):
     with lc.ledger_lock(root):
+        validate(row)
         row.setdefault("timestamp", utc_now_iso())
         row.setdefault("git_commit", git_commit_short(root))
-        validate(row)
         adm._check_knowledge_state(row, root, executed, allow_missing_deps=allow_missing_deps)
+        existing = read_entries(root, row["paper"])
+        current = adm.check_revision(row, existing, id_field="node_id",
+                                     semantic_key=SEMANTIC_KEY, legacy_amended=True)
+        adm.check_retirement(row, root, allow_dependents=allow_dependents)
+        if deduplicate and current and lc.json_equal(lc.request_payload(current), lc.request_payload(row)):
+            regenerate_summary(lc.db_dir(root, "knowledge", row["paper"]))
+            return None
         if "node_seq" not in row:  # allocate under the same lock as the chain head
-            existing = read_entries(root, row["paper"])
             row["node_seq"] = 1 + sum(1 for r in existing if r.get("node_id") == row["node_id"])
         db_dir = lc.db_dir(root, "knowledge", row["paper"])
         lc.chain_append(db_dir, "nodes.jsonl", row)
@@ -225,35 +240,32 @@ def _append_verified_row(row, root, executed, *, allow_missing_deps=False):
 
 def append_batch(rows: list[dict[str, Any]], *, repo_root: str | Path | None = None,
                  force: bool = False, skip_exec: bool = False,
-                 allow_missing_deps: bool = False) -> dict[str, Any]:
+                 allow_missing_deps: bool = False,
+                 allow_dependents: bool = False) -> dict[str, Any]:
     """Validate + dedup-append a list of node rows (one decomposition's worth).
 
-    Idempotent: a (paper, node_id) whose LATEST non-amended row already has the
-    same (status, summary) is skipped unless `force=True`, so re-running a
-    decomposition does not duplicate rows. Returns counts + the papers touched.
+    Only identical submitted payloads are skipped, after validation and every
+    gate, unless force=True. All semantic-key fields participate; non-key
+    metadata changes append without supersedes. Force never bypasses lineage.
     """
     if not isinstance(rows, list):
         raise ValueError("rows must be a JSON array of node objects")
     root = Path(repo_root) if repo_root else Path.cwd()
     prepared = adm.prepare_verifications(rows, root, skip_exec=skip_exec)
-    by_paper: dict[str, list] = {}
-    for row, executed in prepared:
-        by_paper.setdefault(row.get("paper", "?"), []).append((row, executed))
+    papers: set[str] = set()
     appended = skipped = 0
     with lc.ledger_lock(root):
-        for paper, prows in by_paper.items():
-            existing = read_entries(root, paper)
-            for row, executed in prows:
-                if not force:
-                    cur = latest_status(existing, paper, row.get("node_id", ""))
-                    if cur and cur.get("status") == row.get("status") and cur.get("summary") == row.get("summary"):
-                        skipped += 1
-                        continue
-                written = _append_verified_row(row, root, executed,
-                                               allow_missing_deps=allow_missing_deps)
-                existing.append(written)
+        for row, executed in prepared:
+            written = _append_verified_row(row, root, executed,
+                                           allow_missing_deps=allow_missing_deps,
+                                           allow_dependents=allow_dependents,
+                                           deduplicate=not force)
+            papers.add(row["paper"])
+            if written is None:
+                skipped += 1
+            else:
                 appended += 1
-    return {"appended": appended, "skipped": skipped, "papers": sorted(by_paper)}
+    return {"appended": appended, "skipped": skipped, "papers": sorted(papers)}
 
 
 def read_entries(repo_root: str | Path | None, paper: str) -> list[dict[str, Any]]:
@@ -306,9 +318,9 @@ def query(paper: str, *,
           repo_root: str | Path | None = None) -> list[dict[str, Any]]:
     """Filter knowledge-database rows for a paper.
 
-    `latest_only=True` (default) collapses to the latest non-amended row per
-    (paper, node_id). Pass False to see the full append-only history including
-    promotions.
+    `latest_only=True` (default) returns the latest active row per node, omitting
+    retired nodes and ignoring legacy amended pointers. Pass False for the full
+    append history, including supersedes links, promotions and retirement.
     """
     rows = read_entries(repo_root, paper)
     if latest_only:
@@ -367,6 +379,7 @@ tr.hypothesis{background:#e6f0ff}
 tr.blocking{background:#ffe2e2}
 tr.future{background:#f2f2f2;color:#666}
 tr.amended{background:#f2f2f2;color:#777}
+tr.retired{background:#f2f2f2;color:#777}
 """
 
 _HTML_CSS = lc.ledger_css(_STATUS_CSS, advance=True)
@@ -388,8 +401,8 @@ def render_html(paper: str, *, repo_root: str | Path | None = None,
                 latest_only: bool = True) -> Path:
     """Render the per-paper knowledge ledger to a self-contained HTML page
     at `results/views/knowledge/paper_<paper>.html` (or a custom path).
-    Default shows the latest non-amended row per node_id; `latest_only=False`
-    includes the full promotion history."""
+    Default shows the latest active row per node_id; `latest_only=False`
+    includes revisions, promotion history and retired nodes."""
     if latest_only:
         rows = query(paper, latest_only=True, repo_root=repo_root)
     else:
@@ -428,7 +441,8 @@ def _build_knowledge_html(paper: str, rows: list[dict[str, Any]], *, latest_only
                              ", ".join(f"{k}:{v}" for k, v in sorted(by_domain.items())) + "</span>")
     summary = "<div class='summary'>" + "".join(summary_parts) + "</div>"
 
-    cols = ("timestamp", "node_id", "task_id", "domain", "status",
+    revisions = lc.revision_labels(rows)
+    cols = ("revision", "timestamp", "node_id", "task_id", "domain", "status",
             "summary", "equation_labels (○)", "code_block_refs (□)",
             "concept_advance (△)", "predecessors", "evidence")
     head = "".join(f"<th>{c}</th>" for c in cols)
@@ -439,6 +453,7 @@ def _build_knowledge_html(paper: str, rows: list[dict[str, Any]], *, latest_only
         ca = r.get("concept_advance")
         ca_cell = '<span class="advance">△ yes</span>' if ca else (_esc(None) if ca is None else "no")
         cells = [
+            _esc(revisions[r.get("row_hash", "")]),
             _esc(r.get("timestamp")),
             f'<span class="cell-mono" id="node-{_esc(nid)}">{_esc(nid)}</span>',
             _esc(r.get("task_id")),
@@ -453,7 +468,7 @@ def _build_knowledge_html(paper: str, rows: list[dict[str, Any]], *, latest_only
         ]
         body_rows.append(f"<tr class='{cls}'>" + "".join(f"<td>{c}</td>" for c in cells) + "</tr>")
     body = "".join(body_rows)
-    mode_note = "latest non-amended row per node_id" if latest_only else "full append history including promotions and amendments"
+    mode_note = "latest active row per node_id (retired nodes omitted)" if latest_only else "full append history including revisions, amendments and retirement"
     return f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8">
 <title>knowledge_database — paper_{_esc(paper)}</title>
@@ -549,8 +564,11 @@ def main(argv: list[str] | None = None) -> int:
                     help="do not run verification.command (recorded in admission_flags)")
     ab.add_argument("--allow-missing-deps", action="store_true",
                     help="admit solid rows despite unresolvable predecessors (recorded in admission_flags)")
+    for parser in (ap_app, ab):
+        parser.add_argument("--allow-dependents", action="store_true",
+                            help="retire despite non-retired dependents (recorded in admission_flags)")
 
-    qy = sub.add_parser("query", help="filter rows; default returns the latest non-amended row per node_id")
+    qy = sub.add_parser("query", help="filter rows; default returns the latest active row per node_id")
     qy.add_argument("--paper", required=True)
     qy.add_argument("--status", choices=STATUSES, default=None)
     qy.add_argument("--node-id", default=None, dest="node_id")
@@ -559,7 +577,7 @@ def main(argv: list[str] | None = None) -> int:
     qy.add_argument("--equation-label", default=None, dest="equation_label")
     qy.add_argument("--concept-advance-only", action="store_true", dest="concept_advance_only")
     qy.add_argument("--with-history", action="store_true",
-                    help="include amended/superseded rows (default: latest-only)")
+                    help="include amended/superseded/retired rows (default: active latest-only)")
     qy.add_argument("--repo-root", type=Path, default=None)
 
     pr = sub.add_parser("predecessors", help="walk the DAG back from a node")
@@ -579,7 +597,7 @@ def main(argv: list[str] | None = None) -> int:
                     help="custom output path (default: results/views/knowledge/paper_<paper>.html)")
     rh.add_argument("--repo-root", type=Path, default=None)
     rh.add_argument("--with-history", action="store_true",
-                    help="include the full append history (default: latest non-amended per node_id)")
+                    help="include the full append history (default: latest active per node_id)")
 
     args = ap.parse_args(argv)
 
@@ -593,7 +611,8 @@ def main(argv: list[str] | None = None) -> int:
         raw = args.row_file.read_text() if args.row_file else sys.stdin.read()
         row = json.loads(raw)
         written = append_row(row, repo_root=args.repo_root, skip_exec=args.skip_exec,
-                             allow_missing_deps=args.allow_missing_deps)
+                             allow_missing_deps=args.allow_missing_deps,
+                             allow_dependents=args.allow_dependents)
         out = {"appended": True,
                "git_commit": written["git_commit"],
                "timestamp": written["timestamp"],
@@ -609,7 +628,8 @@ def main(argv: list[str] | None = None) -> int:
         raw = args.rows_file.read_text() if args.rows_file else sys.stdin.read()
         print(json.dumps(append_batch(json.loads(raw), repo_root=args.repo_root, force=args.force,
                                       skip_exec=args.skip_exec,
-                                      allow_missing_deps=args.allow_missing_deps)))
+                                      allow_missing_deps=args.allow_missing_deps,
+                                      allow_dependents=args.allow_dependents)))
         return 0
     if args.cmd == "query":
         results = query(

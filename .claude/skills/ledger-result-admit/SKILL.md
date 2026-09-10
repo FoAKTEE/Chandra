@@ -139,7 +139,8 @@ with tempfile.TemporaryDirectory(prefix='result-skill-', dir='/tmp') as tmp:
     assert written['verifier_result']['execution']['exit_code'] == 0
     assert written['actor_role'] == 'worker'
     (root / 'evidence.txt').write_text('integer equality verified\n')
-    hashed = db.append_row({**row, 'evidence': 'evidence.txt'}, repo_root=root)
+    hashed = db.append_row({**row, 'evidence': 'evidence.txt',
+                            'supersedes': written['row_hash']}, repo_root=root)
     assert hashed['evidence_sha256'] == adm.sha256_file(root / 'evidence.txt')
     for bad in ({**row, 'verification': {'command': "python3 -c 'raise SystemExit(1)'"}},
                 {**row, 'dependencies': ['missing::node']}):

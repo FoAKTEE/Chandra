@@ -156,9 +156,13 @@ def flatten_record(d: dict, prefix: str = "") -> dict:
 def regenerate_summary(db_dir: Path, filename: str, order: list[str]) -> None:
     """Rebuild `summary.csv` next to `<db_dir>/<filename>` (a JSONL ledger).
     `order` lists the preferred leading columns; any extra flattened keys are
-    appended in sorted order. No-op if the JSONL is missing or empty."""
+    appended in sorted order. The derived revision column marks superseded
+    rows without changing their hashed payloads. No-op for an empty ledger."""
     with ledger_lock(_repo_root(db_dir)):
-        rows = [flatten_record(row) for row in _read_rows(db_dir / filename)]
+        history = _read_rows(db_dir / filename)
+        revisions = revision_labels(history)
+        rows = [flatten_record({**row, "revision": revisions[row.get("row_hash", "")]})
+                for row in history]
         if not rows:
             return
         seen = set().union(*[r.keys() for r in rows])
@@ -279,8 +283,11 @@ def verify_all_chains(repo_root: str | Path | None) -> dict[str, Any]:
 
 
 def latest_per_node(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Collapse to the latest non-amended row per node_id, in append-order
-    (the JSONL file IS the ordering: last occurrence wins)."""
+    """Latest active row per node_id, in append order (last wins).
+
+    Legacy amended pointers are ignored. Retirement hides the entire node,
+    including its older active rows; a subsequent active append can revive it.
+    """
     by_node: dict[str, dict[str, Any]] = {}
     for r in rows:
         if r.get("status") == "amended":
@@ -288,7 +295,49 @@ def latest_per_node(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         nid = r.get("node_id")
         if nid is not None:
             by_node[nid] = r
-    return list(by_node.values())
+    return [r for r in by_node.values() if r.get("status") != "retired"]
+
+
+_OBSERVED_FIELDS = frozenset({
+    "timestamp", "git_commit", "row_hash", "actor_role", "node_seq",
+    "evidence_sha256", "verification_run", "admission_flags",
+})
+
+
+def request_payload(row: dict[str, Any]) -> dict[str, Any]:
+    """Submitted payload for replay comparison, excluding admission observations.
+
+    Status, semantic fields, routing metadata, verifier commands, and supersedes
+    all participate. A fresh verification run must not manufacture a new request.
+    """
+    payload = {k: v for k, v in row.items() if k not in _OBSERVED_FIELDS}
+    if isinstance(payload.get("verifier_result"), dict):
+        payload["verifier_result"] = {k: v for k, v in payload["verifier_result"].items()
+                                      if k != "execution"}
+    return payload
+
+
+def json_equal(left: Any, right: Any) -> bool:
+    """Compare JSON values without Python's bool/number equality conflation."""
+    return json.dumps(left, sort_keys=True, ensure_ascii=False) == json.dumps(right, sort_keys=True, ensure_ascii=False)
+
+
+def revision_labels(rows: list[dict[str, Any]]) -> dict[str, str]:
+    """Derived view labels; never mutate or persist annotations on hashed rows."""
+    successors: dict[str, list[str]] = {}
+    for row in rows:
+        if row.get("supersedes"):
+            successors.setdefault(row["supersedes"], []).append(row.get("row_hash", ""))
+    labels = {}
+    for row in rows:
+        row_hash = row.get("row_hash", "")
+        parts = [f"row {row_hash}"] if row_hash else []
+        if row.get("supersedes"):
+            parts.append(f"supersedes {row['supersedes']}")
+        if row_hash in successors:
+            parts.append("superseded by " + ", ".join(successors[row_hash]))
+        labels[row_hash] = "; ".join(parts)
+    return labels
 
 
 def max_iteration(rows: list[dict[str, Any]]) -> int | None:

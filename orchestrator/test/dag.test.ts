@@ -56,3 +56,18 @@ test("missionComplete only when every node is solid (and mission non-empty)", ()
   assert.equal(missionComplete(buildMission(P, [row("a", "solid")], [])), true);
   assert.equal(missionComplete(buildMission(P, [row("a", "solid"), row("b", "future")], [])), false);
 });
+
+test("a retired node is neither ready nor an obstacle to completion", () => {
+  // The cast lets the regression execute against the old status vocabulary.
+  const retired = "retired" as KnowledgeRow["status"];
+  const mission = buildMission(P, [row("a", "solid"), row("b", "future"), row("b", retired)], []);
+  assert.deepEqual(readyFrontier(mission), []);
+  assert.equal(missionComplete(mission), true);
+});
+
+test("a retired predecessor does not satisfy a dependent", () => {
+  const retired = "retired" as KnowledgeRow["status"];
+  const mission = buildMission(P, [row("a", "solid"), row("a", retired), row("b", "hypothesis", ["a"])], []);
+  assert.deepEqual(readyFrontier(mission), []);
+  assert.equal(missionComplete(mission), false);
+});

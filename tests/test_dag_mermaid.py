@@ -84,7 +84,8 @@ def seed_with_trials(tmp):
     kdb.append_row(valid_knowledge_row(paper=P1, node_id="P1::n1", status="solid", evidence=ev,
                    summary="master equation"), repo_root=tmp)
     kdb.append_row(valid_knowledge_row(paper=P1, node_id="P1::n1", status="preliminary",
-                   summary="master equation v2"), repo_root=tmp)   # 2nd knowledge record under n1
+                   summary="master equation v2",
+                   supersedes=kdb.query(P1, node_id="P1::n1", repo_root=tmp)[0]["row_hash"]), repo_root=tmp)   # 2nd knowledge record under n1
     edb.append_row(valid_error_fail_row(paper=P1, node_id="P1::n1"), repo_root=tmp)
     edb.append_row(valid_error_pass_row(paper=P1, node_id="P1::n1"), repo_root=tmp)
 

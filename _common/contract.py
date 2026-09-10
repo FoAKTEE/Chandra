@@ -33,6 +33,18 @@ LEDGER_FILES = {
 def manifest() -> dict:
     return {
         "contract_version": 1,
+        "revisions": {
+            "supersedes_field": "supersedes",
+            "semantic_keys": {
+                "result": list(result_database.SEMANTIC_KEY),
+                "claim": list(claims_database.SEMANTIC_KEY),
+                "knowledge": list(knowledge_database.SEMANTIC_KEY),
+                # Trials have no status-only semantic key: request identity
+                # compares the entire submitted payload, excluding observations.
+                "error": None,
+            },
+            "retired_status": "retired",
+        },
         "lock": {"path": txn.LOCK_PATH, "timeout_env": txn.TIMEOUT_ENV},
         "delegation": {
             "env_var": admission.ROLE_ENV_VAR,
@@ -56,6 +68,7 @@ def manifest() -> dict:
         "knowledge": {
             "statuses": list(knowledge_database.STATUSES),
             "exist_statuses": list(knowledge_database.EXIST_STATUSES),
+            "nonexist_statuses": list(knowledge_database.NONEXIST_STATUSES),
             "domains": list(knowledge_database.DOMAINS),
         },
         "claims": {

@@ -122,7 +122,7 @@ for args in [[], *[[s] for s in ('schema', 'describe-fields', 'append', 'append-
 schema = subprocess.check_output(['python3', cli, 'schema'], text=True)
 assert all(repr(s) in schema for s in (*db.STATUSES, *db.DOMAINS))
 assert set(db.EXIST_STATUSES) == {'solid', 'preliminary', 'hypothesis'}
-assert set(db.NONEXIST_STATUSES) == {'blocking', 'future'}
+assert set(db.NONEXIST_STATUSES) == {'blocking', 'future', 'retired'}
 text = (Path(os.environ['CLAUDE_SKILL_DIR']) / 'SKILL.md').read_text()
 row = json.loads(text.split(chr(96) * 3 + 'json\n')[1].split(chr(96) * 3)[0])
 assert db.REQUIRED_FIELDS <= row.keys()
@@ -132,7 +132,13 @@ with tempfile.TemporaryDirectory(prefix='knowledge-skill-', dir='/tmp') as tmp:
     (root / 'evidence.txt').write_text('verified example\n')
     assert db.append_batch([row], repo_root=root)['appended'] == 1
     changed = {**row, 'predecessors': ['_shared::base']}
-    assert db.append_batch([changed], repo_root=root)['skipped'] == 1
+    try:
+        db.append_batch([changed], repo_root=root)
+    except adm.AdmissionError as exc:
+        assert 'predecessors' in str(exc)
+    else:
+        raise AssertionError('changed predecessors admitted without lineage')
+    changed['supersedes'] = db.query('P', repo_root=root)[0]['row_hash']
     assert db.append_batch([changed], repo_root=root, force=True)['appended'] == 1
     db.append_row({**row, 'status': 'amended'}, repo_root=root)
     assert db.query('P', repo_root=root)[0]['status'] == 'hypothesis'
@@ -144,7 +150,8 @@ with tempfile.TemporaryDirectory(prefix='knowledge-skill-', dir='/tmp') as tmp:
         pass
     else:
         raise AssertionError('solid accepted on a hypothesis predecessor')
-    landed = db.append_row({**row, 'status': 'solid', 'evidence': 'evidence.txt'}, repo_root=root)
+    landed = db.append_row({**row, 'status': 'solid', 'evidence': 'evidence.txt',
+                            'supersedes': db.query('P', repo_root=root)[0]['row_hash']}, repo_root=root)
     assert landed['evidence_sha256'] == adm.sha256_file(root / 'evidence.txt')
     assert db.query('P', repo_root=root)[0]['status'] == 'solid'
 PY

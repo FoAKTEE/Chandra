@@ -15,7 +15,9 @@ for the shared machinery):
     entry in this ledger (the stage-4 reduction-to-baseline rule, executable).
 
 Rows are append-only. To change an entry, append a new row with the same
-`entry_id`; latest append wins for the current view.
+`entry_id`; changing SEMANTIC_KEY requires supersedes naming a prior row_hash
+of that paper/entry_id. Status transitions are free. Owner, node_ids and
+blocking are NON-key fields: changes append without supersedes and latest wins.
 
 USAGE
     python _common/claims_database.py schema
@@ -57,12 +59,14 @@ NEEDED_EVIDENCE_TYPES = rdb.EVIDENCE_TYPES
 
 REQUIRED_FIELDS = {"paper", "entry_id", "kind", "statement", "status"}
 AUTO_FILLED = {"timestamp", "git_commit"}
+SEMANTIC_KEY = ("kind", "statement", "needed_evidence_type", "scope")
 
 FIELD_DESCRIPTIONS: dict[str, tuple[str, str]] = {
     "timestamp":            ("ISO-8601 UTC", "auto-filled"),
     "git_commit":           ("string", "short SHA, auto-filled"),
     "paper":                ("string", "arxiv-XXXX.XXXXX"),
     "entry_id":             ("string", "stable id; re-append the same id to amend (latest wins)"),
+    "supersedes":           ("string", "optional prior row_hash in this ledger, paper and entry_id; required when the semantic key changes"),
     "kind":                 ("enum", "claim / obligation / assumption"),
     "statement":            ("string", "the claim / obligation / assumption in one plain-language sentence"),
     "status":               ("enum", "claim: open/in_progress/admitted/refuted/withdrawn; obligation: open/discharged/waived; assumption: active/relaxed/retired"),
@@ -95,6 +99,7 @@ def utc_now_iso() -> str:
 # --- validation (pure shape; no filesystem) -----------------------------------
 
 def validate(row: dict[str, Any]) -> None:
+    adm.validate_revision_fields(row)
     missing = REQUIRED_FIELDS - row.keys()
     if missing:
         raise ValueError(f"missing required fields: {sorted(missing)}")
@@ -172,12 +177,21 @@ def check_refs(row: dict[str, Any], repo_root: str | Path | None, *,
 def append_row(row: dict[str, Any], *, repo_root: str | Path | None = None,
                allow_missing_refs: bool = False) -> dict[str, Any]:
     root = Path(repo_root) if repo_root else Path.cwd()
+    return _append_row(row, root, allow_missing_refs=allow_missing_refs)
+
+
+def _append_row(row, root, *, allow_missing_refs=False, deduplicate=False):
     with lc.ledger_lock(root):
+        validate(row)
         row.setdefault("timestamp", utc_now_iso())
         row.setdefault("git_commit", lc.git_commit_short(root))
-        validate(row)
         adm.check_actor_role(row, root)
         check_refs(row, root, allow_missing_refs=allow_missing_refs)
+        current = adm.check_revision(row, read_entries(root, row["paper"]),
+                                     id_field="entry_id", semantic_key=SEMANTIC_KEY)
+        if deduplicate and current and lc.json_equal(lc.request_payload(current), lc.request_payload(row)):
+            regenerate_summary(lc.db_dir(root, "claim", row["paper"]))
+            return None
         db_dir = lc.db_dir(root, "claim", row["paper"])
         lc.chain_append(db_dir, "entries.jsonl", row)
         regenerate_summary(db_dir)
@@ -186,30 +200,27 @@ def append_row(row: dict[str, Any], *, repo_root: str | Path | None = None,
 
 def append_batch(rows: list[dict[str, Any]], *, repo_root: str | Path | None = None,
                  force: bool = False, allow_missing_refs: bool = False) -> dict[str, Any]:
-    """Dedup-append one decomposition's worth of entries. Idempotent: an
-    entry_id whose latest row already has the same (status, statement) is
-    skipped unless `force=True`."""
+    """Skip identical submitted payloads only AFTER schema and gate validation.
+    Semantic-key changes require supersedes even with force=True. Non-key
+    owner/node_ids/blocking changes append freely; the latest row wins.
+    """
     if not isinstance(rows, list):
         raise ValueError("rows must be a JSON array of entry objects")
     root = Path(repo_root) if repo_root else Path.cwd()
-    by_paper: dict[str, list[dict[str, Any]]] = {}
-    for r in rows:
-        by_paper.setdefault(r.get("paper", "?"), []).append(r)
+    papers: set[str] = set()
     appended = skipped = 0
     with lc.ledger_lock(root):
-        for paper, prows in by_paper.items():
-            existing = {r["entry_id"]: r for r in read_entries(root, paper) if "entry_id" in r}
-            for row in prows:
-                cur = existing.get(row.get("entry_id"))
-                if (not force and cur and cur.get("status") == row.get("status")
-                        and cur.get("statement") == row.get("statement")):
-                    skipped += 1
-                    continue
-                written = append_row(dict(row), repo_root=root,
-                                     allow_missing_refs=allow_missing_refs)
-                existing[written["entry_id"]] = written
+        for source in rows:
+            validate(source)
+            row = dict(source)
+            written = _append_row(row, root, allow_missing_refs=allow_missing_refs,
+                                  deduplicate=not force)
+            papers.add(row["paper"])
+            if written is None:
+                skipped += 1
+            else:
                 appended += 1
-    return {"appended": appended, "skipped": skipped, "papers": sorted(by_paper)}
+    return {"appended": appended, "skipped": skipped, "papers": sorted(papers)}
 
 
 def read_entries(repo_root: str | Path | None, paper: str) -> list[dict[str, Any]]:
@@ -277,18 +288,22 @@ def _md_cell(v: Any) -> str:
     return str(v).replace("|", "\\|").replace("\n", " ")
 
 
-def render_md(paper: str, kind: str, *, repo_root: str | Path | None = None) -> str:
+def render_md(paper: str, kind: str, *, repo_root: str | Path | None = None,
+              latest_only: bool = True) -> str:
     if kind not in KINDS:
         raise ValueError(f"kind={kind!r} not in {KINDS}")
-    rows = query(paper, kind=kind, repo_root=repo_root)
+    history = read_entries(repo_root, paper)
+    rows = latest_per_entry(history) if latest_only else history
+    rows = [r for r in rows if r.get("kind") == kind]
     by_status: dict[str, int] = {}
     for r in rows:
         by_status[r.get("status", "?")] = by_status.get(r.get("status", "?"), 0) + 1
-    cols = _VIEW_COLUMNS[kind]
+    cols = (*_VIEW_COLUMNS[kind], "revision")
+    revisions = lc.revision_labels(history)
     lines = [
         f"<!-- GENERATED by `python _common/claims_database.py render-md --paper {paper} --kind {kind}` "
         f"— DO NOT EDIT BY HAND; claim-database/paper_{paper}/entries.jsonl is canonical. "
-        "Change an entry by appending a new row with the same entry_id, then re-render. -->",
+        "Append the same entry_id with supersedes for semantic changes, then re-render. -->",
         "",
         f"# {kind.capitalize()}s — paper_{paper}",
         "",
@@ -299,12 +314,14 @@ def render_md(paper: str, kind: str, *, repo_root: str | Path | None = None) -> 
         "|" + "---|" * len(cols),
     ]
     for r in sorted(rows, key=lambda x: x.get("entry_id", "")):
-        lines.append("| " + " | ".join(_md_cell(r.get(c)) for c in cols) + " |")
+        lines.append("| " + " | ".join(_md_cell(revisions[r.get("row_hash", "")]
+                                                if c == "revision" else r.get(c)) for c in cols) + " |")
     return "\n".join(lines) + "\n"
 
 
 def render_views(paper: str, out_dir: str | Path, *,
-                 repo_root: str | Path | None = None) -> dict[str, str]:
+                 repo_root: str | Path | None = None,
+                 latest_only: bool = True) -> dict[str, str]:
     """Write the three decomposition views (claims.md / obligations.md /
     assumptions.md) into `out_dir`. Returns {kind: path}."""
     out = Path(out_dir)
@@ -312,7 +329,7 @@ def render_views(paper: str, out_dir: str | Path, *,
     written: dict[str, str] = {}
     for kind, filename in _VIEW_FILES.items():
         path = out / filename
-        path.write_text(render_md(paper, kind, repo_root=repo_root), encoding="utf-8")
+        path.write_text(render_md(paper, kind, repo_root=repo_root, latest_only=latest_only), encoding="utf-8")
         written[kind] = str(path)
     return written
 
@@ -398,6 +415,7 @@ def main(argv: list[str] | None = None) -> int:
     rm.add_argument("--out-dir", type=Path, default=None, dest="out_dir",
                     help="write claims.md, obligations.md, and assumptions.md into this directory")
     rm.add_argument("--repo-root", type=Path, default=None)
+    rm.add_argument("--with-history", action="store_true", help="include superseded revisions")
 
     args = ap.parse_args(argv)
     if args.cmd == "schema":
@@ -434,10 +452,12 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.cmd == "render-md":
         if args.out_dir:
-            written = render_views(args.paper, args.out_dir, repo_root=args.repo_root)
+            written = render_views(args.paper, args.out_dir, repo_root=args.repo_root,
+                                   latest_only=not args.with_history)
             print(json.dumps({"rendered": True, "paper": args.paper, "paths": written}))
         elif args.kind:
-            text = render_md(args.paper, args.kind, repo_root=args.repo_root)
+            text = render_md(args.paper, args.kind, repo_root=args.repo_root,
+                             latest_only=not args.with_history)
             if args.out:
                 args.out.parent.mkdir(parents=True, exist_ok=True)
                 args.out.write_text(text, encoding="utf-8")

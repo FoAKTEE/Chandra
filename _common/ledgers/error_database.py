@@ -26,8 +26,13 @@ Validation errors quote allowed enum values back — the agent self-corrects
 from the error message; no markdown to re-read.
 
 APPEND-ONLY DISCIPLINE
-    * Never delete a row. To amend, append a new row with pass_fail="amended"
-      citing the prior row's (timestamp, git_commit) in `notes`.
+    * Optional request_id identifies a trial within a paper. Batch retries with
+      identical submitted payloads are counted as replayed after validation;
+      conflicting payloads for that request_id are rejected. Unidentified
+      trials always append. A deliberate correction uses append (single row)
+      with the same request_id and supersedes naming a prior row_hash.
+    * Never delete a row. Legacy pass_fail="amended" remains accepted; prose
+      correction pointers are deprecated in favor of explicit supersedes links.
     * Failed and crashed runs MUST be appended — never skipped. A loop that
       hides failures cannot be audited.
     * summary.csv is regenerated automatically; never hand-edit it.
@@ -298,6 +303,8 @@ FIELD_DESCRIPTIONS: dict[str, tuple[str, str]] = {
     "failure_mode":       ("enum",          "tag from FAILURE_MODES_<DOMAIN> (query via describe-domain)"),
     # optional / recommended
     "node_id":            ("string",        "logic.md node id — the DAG anchor this trial attaches under"),
+    "request_id":         ("string",        "optional non-empty trial identity within a paper; identical batch retries replay, conflicts reject"),
+    "supersedes":         ("string",        "optional prior row_hash in this ledger, paper and request_id; use single append for deliberate corrections"),
     "node_seq":           ("int",           "1-based index of this trial under its node (auto-filled when node_id is set)"),
     "parameter_regime":   ("object",        "parameters used at the trial"),
     "regime_split":       ("enum",          "dev / holdout / audit (benchmark regime split)"),
@@ -321,6 +328,7 @@ git_commit_short = lc.git_commit_short
 
 def validate(row: dict[str, Any]) -> None:
     """Raise ValueError on schema violation. Allowed values are quoted back in the message."""
+    adm.validate_revision_fields(row, trial=True)
     missing = REQUIRED_FIELDS - row.keys()
     if missing:
         raise ValueError(f"missing required fields: {sorted(missing)}")
@@ -385,33 +393,49 @@ _SUMMARY_ORDER = [
 def append_batch(rows, *, repo_root=None):
     """Packet-flush append for trials: sequential validate+append with ONE
     summary regeneration at the end. A bad row stops the batch there
-    (append-only: earlier rows remain)."""
+    (append-only: earlier rows remain). Identical request_id payloads replay
+    only after validation; conflicting payloads reject. Deliberate revisions
+    must use single-row append with supersedes, not the batch retry API.
+    """
     if not isinstance(rows, list):
         raise ValueError("rows must be a JSON array of trial rows")
     root = Path(repo_root) if repo_root else Path.cwd()
-    appended = 0
+    appended = replayed = 0
     papers = set()
     with lc.ledger_lock(root):
         try:
             for row in rows:
-                written = _append_row_nosummary(dict(row), repo_root=root)
-                papers.add(written["paper"])
+                validate(row)
+                written = _append_row_nosummary(dict(row), repo_root=root, deduplicate=True)
+                papers.add(row["paper"])
+                if written is None:
+                    replayed += 1
+                    continue
                 appended += 1
         finally:
             for paper in papers:
                 regenerate_summary(lc.db_dir(root, "error", paper))
-    return {"appended": appended, "of": len(rows), "papers": sorted(papers)}
+    return {"appended": appended, "replayed": replayed, "of": len(rows), "papers": sorted(papers)}
 
 
-def _append_row_nosummary(row, *, repo_root=None):
+def _append_row_nosummary(row, *, repo_root=None, deduplicate=False):
     root = Path(repo_root) if repo_root else Path.cwd()
     with lc.ledger_lock(root):
+        validate(row)
         row.setdefault("timestamp", utc_now_iso())
         row.setdefault("git_commit", git_commit_short(root))
-        validate(row)
         adm.check_actor_role(row, root)
+        existing = read_entries(root, row["paper"])
+        adm.check_revision(row, existing, id_field="request_id",
+                           semantic_key=() if deduplicate else None)
+        if deduplicate and "request_id" in row:
+            previous = [r for r in existing if r.get("paper") == row["paper"]
+                        and r.get("request_id") == row["request_id"]]
+            if any(lc.json_equal(lc.request_payload(r), lc.request_payload(row)) for r in previous):
+                return None
+            if previous:
+                raise adm.AdmissionError(f"request_id={row['request_id']!r} conflicts with an existing trial payload")
         if row.get("node_id") and "node_seq" not in row:
-            existing = read_entries(root, row["paper"])
             row["node_seq"] = 1 + sum(1 for r in existing if r.get("node_id") == row.get("node_id"))
         db_dir = lc.db_dir(root, "error", row["paper"])
         lc.chain_append(db_dir, "trials.jsonl", row)
@@ -500,13 +524,16 @@ def _build_error_html(paper: str, rows: list[dict[str, Any]]) -> str:
                              ", ".join(f"{k}:{v}" for k, v in top) + "</span>")
     summary = "<div class='summary'>" + "".join(summary_parts) + "</div>"
 
-    cols = ("timestamp", "iteration", "task_id", "stage", "domain", "change_type",
+    revisions = lc.revision_labels(rows)
+    cols = ("revision", "request_id", "timestamp", "iteration", "task_id", "stage", "domain", "change_type",
             "metric", "pass_fail", "failure_mode", "change_summary", "root_cause")
     head = "".join(f"<th>{c}</th>" for c in cols)
     body_rows: list[str] = []
     for r in rows:
         cls = r.get("pass_fail", "")
         cells = [
+            _esc(revisions[r.get("row_hash", "")]),
+            _esc(r.get("request_id")),
             _esc(r.get("timestamp")),
             _esc(r.get("iteration")),
             _esc(r.get("task_id")),

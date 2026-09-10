@@ -3,7 +3,8 @@
  * priority IS topology; there is no separate priority function. */
 import type { ClaimRow, KnowledgeRow, Mission, MissionNode } from "./types.js";
 
-/** Latest non-amended row per node_id, in append order (last wins). */
+/** Latest non-amended row per node_id, in append order (last wins).
+ * Keep retired tombstones so an older solid predecessor cannot reappear. */
 export function latestPerNode(rows: KnowledgeRow[]): Map<string, KnowledgeRow> {
   const by = new Map<string, KnowledgeRow>();
   for (const r of rows) {
@@ -66,16 +67,16 @@ function assignDepths(mission: Mission): void {
 export function readyFrontier(mission: Mission): MissionNode[] {
   const ready: MissionNode[] = [];
   for (const node of mission.values()) {
-    if (node.status === "solid" || node.depth < 0) continue;
+    if (node.status === "solid" || node.status === "retired" || node.depth < 0) continue;
     const blocked = node.predecessors.some(p => mission.get(p)?.status !== "solid");
     if (!blocked) ready.push(node);
   }
   return ready.sort((a, b) => a.depth - b.depth || a.id.localeCompare(b.id));
 }
 
-/** True when every node is solid — the mission's terminal condition. */
+/** True when every non-retired node is solid and the mission is non-empty. */
 export function missionComplete(mission: Mission): boolean {
   if (mission.size === 0) return false;
-  for (const n of mission.values()) if (n.status !== "solid") return false;
+  for (const n of mission.values()) if (n.status !== "solid" && n.status !== "retired") return false;
   return true;
 }

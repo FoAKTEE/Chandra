@@ -35,7 +35,7 @@ INCOMPLETE = "incomplete tail (crash mid-write)"
 def _row(db, index=0):
     fields = {"paper": "P", "git_commit": "test", "timestamp": "test"}
     if db == "knowledge":
-        return valid_knowledge_row(**fields, node_id="P::shared", summary=str(index))
+        return valid_knowledge_row(**fields, node_id="P::shared", summary="shared node", notes=str(index))
     if db == "error":
         return valid_error_pass_row(**fields, node_id="P::shared", iteration=index)
     if db == "result":

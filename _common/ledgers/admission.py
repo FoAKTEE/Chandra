@@ -30,6 +30,7 @@ Escape hatches are explicit keyword/CLI flags and are recorded on the row in
 from __future__ import annotations
 
 import hashlib
+from copy import deepcopy
 import os
 import re
 import subprocess
@@ -173,6 +174,73 @@ def _flag(row: dict[str, Any], flag: str) -> None:
         flags.append(flag)
 
 
+def validate_revision_fields(row: dict[str, Any], *, trial: bool = False) -> None:
+    """Optional revision/request fields must be non-empty strings when present."""
+    if not isinstance(row, dict):
+        raise ValueError("row must be a JSON object")
+    for field in ("supersedes", "request_id") if trial else ("supersedes",):
+        if field in row and (not isinstance(row[field], str) or not row[field].strip()):
+            raise ValueError(f"{field} must be a non-empty string")
+
+
+def check_revision(row: dict[str, Any], existing: list[dict[str, Any]], *,
+                   id_field: str, semantic_key: tuple[str, ...] | None,
+                   legacy_amended: bool = False) -> dict[str, Any] | None:
+    """Validate lineage against this ledger's history while the caller holds its
+    transaction lock. Any prior revision of the same paper/id may be targeted;
+    supersedes records lineage, never redirects references or changes ordering.
+
+    None as semantic_key means the complete trial request payload. Legacy
+    knowledge amendments are deprecated correction pointers: they do not replace
+    the active proposition and remain exempt from semantic replacement checks.
+    """
+    from . import ledger_common as lc
+    identity = row.get(id_field)
+    history = [r for r in existing if r.get("paper") == row["paper"]
+               and r.get(id_field) == identity and identity is not None]
+    if "supersedes" in row:
+        if not any(r.get("row_hash") == row["supersedes"] for r in history):
+            raise AdmissionError(
+                f"supersedes {row['supersedes']!r} must name a prior row_hash in the "
+                f"same ledger, paper and {id_field}={identity!r}")
+    current = next((r for r in reversed(history)
+                    if not legacy_amended or r.get("status") != "amended"), None)
+    if current is None or "supersedes" in row or (legacy_amended and row.get("status") == "amended"):
+        return current
+    before, after = current, row
+    if semantic_key is None:
+        before, after = lc.request_payload(current), lc.request_payload(row)
+        semantic_key = tuple(sorted((before.keys() | after.keys()) - {"supersedes"}))
+    changed = [field for field in semantic_key if not lc.json_equal(before.get(field), after.get(field))]
+    if changed:
+        raise AdmissionError(
+            f"{id_field}={identity!r} changes semantic fields {', '.join(changed)}; "
+            "provide supersedes with a prior row_hash for this identity")
+    return current
+
+
+def check_retirement(row: dict[str, Any], root: Path, *, allow_dependents: bool) -> None:
+    """Reject retirement with active dependents across all papers/layouts.
+    The caller holds the repository transaction lock through the append.
+    """
+    if row.get("status") != "retired":
+        return
+    from . import ledger_common as lc
+    dependents = []
+    for paper, _ in lc.iter_paper_dirs(root, "knowledge"):
+        rows = lc.read_jsonl(root, "knowledge", paper, "nodes.jsonl")
+        for dependent in lc.latest_per_node(rows):
+            if ((paper, dependent.get("node_id")) != (row["paper"], row["node_id"])
+                    and row["node_id"] in (dependent.get("predecessors") or [])):
+                dependents.append(f"{paper}/{dependent['node_id']}")
+    if dependents and not allow_dependents:
+        raise AdmissionError(
+            f"cannot retire {row['node_id']!r}: non-retired dependents {dependents}; "
+            "retire them first or pass --allow-dependents")
+    if allow_dependents:
+        _flag(row, "allow_dependents")
+
+
 # --- knowledge-ledger lookup (raw file scan; no import cycle with the ledger) --
 
 def _latest_non_amended(rows: list[dict[str, Any]], node_id: str) -> dict[str, Any] | None:
@@ -235,7 +303,7 @@ def prepare_verifications(rows: list[dict[str, Any]], root: Path, *, skip_exec: 
     """
     prepared = []
     for source in rows:
-        row = dict(source) if isinstance(source, dict) else source
+        row = deepcopy(source)
         try:
             executed = _execute_if_present(row, root, skip_exec=skip_exec)
         except Exception as exc:

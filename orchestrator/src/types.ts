@@ -3,7 +3,7 @@
  * message vocabulary persisted to the journal. */
 
 export type NodeStatus =
-  | "hypothesis" | "preliminary" | "solid" | "blocking" | "future" | "amended";
+  | "hypothesis" | "preliminary" | "solid" | "blocking" | "future" | "amended" | "retired";
 
 export interface KnowledgeRow {
   paper: string;

@@ -18,8 +18,9 @@ USAGE
     python _common/result_database.py render-state --paper P
 
 Rows are append-only. To correct a result, append a new row with the same
-`result_id`; latest append wins for the current view, while history remains in
-`results.jsonl`.
+`result_id` and `supersedes` naming a prior row_hash whenever SEMANTIC_KEY
+changes. Status-only transitions remain free. Latest append wins for the
+current view, while history and explicit revision links remain in results.jsonl.
 """
 from __future__ import annotations
 
@@ -67,12 +68,14 @@ REQUIRED_FIELDS = {
     "assumptions", "status", "provenance", "open_obligations",
 }
 AUTO_FILLED = {"timestamp", "git_commit"}
+SEMANTIC_KEY = ("claim", "evidence_type", "working_context", "assumptions", "dependencies", "evidence")
 
 FIELD_DESCRIPTIONS: dict[str, tuple[str, str]] = {
     "timestamp":        ("ISO-8601 UTC", "auto-filled"),
     "git_commit":       ("string", "short SHA, auto-filled"),
     "paper":            ("string", "arxiv-XXXX.XXXXX"),
     "result_id":        ("string", "stable accepted/classified result id"),
+    "supersedes":       ("string", "optional prior row_hash in this ledger, paper and result_id; required when the semantic key changes"),
     "name":             ("string", "short human-readable result name"),
     "working_context":  ("object/string", "model, regime, units, frames, task constraints"),
     "claim":            ("string", "statement being advanced or classified"),
@@ -101,6 +104,7 @@ def utc_now_iso() -> str:
 
 
 def validate(row: dict[str, Any]) -> None:
+    adm.validate_revision_fields(row)
     missing = REQUIRED_FIELDS - row.keys()
     if missing:
         raise ValueError(f"missing required fields: {sorted(missing)}")
@@ -145,12 +149,16 @@ def _append_row_nosummary(row: dict[str, Any], *, repo_root: str | Path | None =
     return _append_verified_row(row, root, executed, allow_missing_deps=allow_missing_deps)
 
 
-def _append_verified_row(row, root, executed, *, allow_missing_deps=False):
+def _append_verified_row(row, root, executed, *, allow_missing_deps=False, deduplicate=False):
     with lc.ledger_lock(root):
+        validate(row)
         row.setdefault("timestamp", utc_now_iso())
         row.setdefault("git_commit", lc.git_commit_short(root))
-        validate(row)
         adm._check_result_state(row, root, executed, allow_missing_deps=allow_missing_deps)
+        current = adm.check_revision(row, read_entries(root, row["paper"]),
+                                     id_field="result_id", semantic_key=SEMANTIC_KEY)
+        if deduplicate and current and lc.json_equal(lc.request_payload(current), lc.request_payload(row)):
+            return None
         db_dir = lc.db_dir(root, "result", row["paper"])
         lc.chain_append(db_dir, "results.jsonl", row)
         return row
@@ -159,26 +167,31 @@ def _append_verified_row(row, root, executed, *, allow_missing_deps=False):
 def append_batch(rows: list[dict[str, Any]], *, repo_root: str | Path | None = None,
                  skip_exec: bool = False, allow_missing_deps: bool = False) -> dict[str, Any]:
     """Packet-flush append: sequentially gate + append a list of rows,
-    regenerating summary.csv ONCE at the end. Append-only semantics: a row
+    regenerating summary.csv ONCE at the end. An identical latest submitted
+    payload is counted as replayed, after schema and gate validation. A row
     that fails the gate STOPS the batch there; earlier rows are already in
     (report shows appended count + the failing row)."""
     if not isinstance(rows, list):
         raise ValueError("rows must be a JSON array of result rows")
     root = Path(repo_root) if repo_root else Path.cwd()
     prepared = adm.prepare_verifications(rows, root, skip_exec=skip_exec)
-    appended = 0
+    appended = replayed = 0
     papers: set[str] = set()
     with lc.ledger_lock(root):
         try:
             for row, executed in prepared:
                 written = _append_verified_row(dict(row), root, executed,
-                                               allow_missing_deps=allow_missing_deps)
-                papers.add(written["paper"])
+                                               allow_missing_deps=allow_missing_deps,
+                                               deduplicate=True)
+                papers.add(row["paper"])
+                if written is None:
+                    replayed += 1
+                    continue
                 appended += 1
         finally:
             for paper in papers:
                 regenerate_summary(lc.db_dir(root, "result", paper))
-    return {"appended": appended, "of": len(rows), "papers": sorted(papers)}
+    return {"appended": appended, "replayed": replayed, "of": len(rows), "papers": sorted(papers)}
 
 
 def read_entries(repo_root: str | Path | None, paper: str) -> list[dict[str, Any]]:
@@ -264,13 +277,15 @@ def _build_result_html(paper: str, rows: list[dict[str, Any]], *, latest_only: b
         f"<span><strong>open obligations</strong> {open_obs}</span>",
         *[f"<span><strong>{k}</strong> {v}</span>" for k, v in sorted(by_status.items())],
     ]) + "</div>"
-    cols = ("timestamp", "result_id", "status", "evidence_type", "name",
+    revisions = lc.revision_labels(rows)
+    cols = ("revision", "timestamp", "result_id", "status", "evidence_type", "name",
             "claim", "verdict", "evidence", "open_obligations")
     head = "".join(f"<th>{c}</th>" for c in cols)
     body_rows: list[str] = []
     for r in rows:
         cls = r.get("status", "")
         cells = [
+            _esc(revisions[r.get("row_hash", "")]),
             _esc(r.get("timestamp")),
             f'<span class="cell-mono">{_esc(r.get("result_id"))}</span>',
             _esc(r.get("status")),
@@ -313,7 +328,7 @@ def _md_cell(v: Any) -> str:
 def _generated_header(paper: str, subcommand: str) -> str:
     return (f"<!-- GENERATED by `python _common/result_database.py {subcommand} --paper {paper}` "
             f"— DO NOT EDIT BY HAND; result-database/paper_{paper}/results.jsonl is canonical. "
-            "Correct by appending a new row with the same result_id, then re-render. -->")
+            "Correct by appending the same result_id with supersedes for semantic changes, then re-render. -->")
 
 
 def render_md(paper: str, *, repo_root: str | Path | None = None,
@@ -333,7 +348,8 @@ def render_md(paper: str, *, repo_root: str | Path | None = None,
         + ", ".join(f"{len(by_status.get(s, []))} {s}" for s in STATUSES if s in by_status)
         + ".",
     ]
-    cols = ("result_id", "name", "claim", "evidence_type", "verdict",
+    revisions = lc.revision_labels(rows)
+    cols = ("revision", "result_id", "name", "claim", "evidence_type", "verdict",
             "evidence", "dependencies", "assumptions", "open_obligations")
     for status in STATUSES:
         if status not in by_status:
@@ -345,7 +361,7 @@ def render_md(paper: str, *, repo_root: str | Path | None = None,
             ev = r.get("evidence")
             if "evidence_sha256" in r:
                 ev = f"{_md_cell(ev)} `sha256:{r['evidence_sha256'][:12]}`"
-            cells = (r.get("result_id"), r.get("name"), r.get("claim"),
+            cells = (revisions[r.get("row_hash", "")], r.get("result_id"), r.get("name"), r.get("claim"),
                      r.get("evidence_type"), (r.get("verifier_result") or {}).get("verdict"),
                      ev, r.get("dependencies"), r.get("assumptions"), r.get("open_obligations"))
             lines.append("| " + " | ".join(_md_cell(c) for c in cells) + " |")

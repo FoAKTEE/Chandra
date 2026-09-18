@@ -38,3 +38,10 @@ orchestrator/dist/
 *.lot
 *.lof
 %OUTDIR%/
+
+# Vibe Studio Code (upstream checkout, toolchain and build output are never tracked)
+vibe/vscode/
+vibe/.toolchain/
+vibe/.build/
+# Overlay files are tracked verbatim: no rule above (*.log, progress/, *-database/, ...) may hide one.
+!vibe/overlay/**

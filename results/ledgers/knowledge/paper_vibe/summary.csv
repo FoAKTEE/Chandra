@@ -190,3 +190,46 @@ stress layout: 500 nodes, 976 edges, 2350 segments, 1097 dummies, 38 layers, 561
 ℹ duration_ms 2696.659625
 npm warn Unknown project config ""timeout"". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
 ",2026-09-18T09:09:42+00:00
+2026-09-18T09:38:54.997756+00:00,vibe,vibe::visual,2,V9,a1fb668,software,solid,Screenshot-driven visual verification of the running app and iteration on the findings,a1fb668,"[""vibe::wsbar-part"", ""vibe::dag-integration"", ""vibe::branding""]",worker,tests_failed,True,0,0,"Promoted on commit a1fb668: the extension's whole suite reports 'pass 112 / fail 0' in 2.89 s, including the four typecheck projects and 11 new fit-policy tests. The visual pass over the packaged build found the Workflow Graph panel opening fit-all on the 33-node two-paper graph with about 7 px labels (6 px label line box) in a mostly empty 792x776 panel; the fix is a pure fit policy - fit all down to scale 0.579, below that open at 11/14.5 = 0.759 anchored on the frontier, else the non-solid nodes, else the newest layer, with measured toolbar and legend insets, overflow count chips, and Fit still showing everything. In the running app and in the re-packaged app launched through the vibe command the panel now opens at 0.759 on the ready node 'visual' with chips '← 18 more' and '3 more →' and 13 px label boxes, and Fit shows all 33 nodes; screenshots /tmp/chandra/vibe/final-2-graph.png before, /tmp/chandra/vibe/fit-app-panel.png and /tmp/chandra/vibe/final2-2-graph.png after. Also part of this node's evidence: the orchestrating session inspected captures of every feature in the live app - the workspace bar in dark and light, the graph in the sidebar and in the editor panel, and the packaged app with two workspaces switching in one frame. [OPEN] a panel resize never re-frames the opening view. [OPEN] a third wrapped legend row would overlap the bottom chip.",row bd62f9983512f0e6675697b9a4067b39782ed6296ebe688c122cee8921af9e20,bd62f9983512f0e6675697b9a4067b39782ed6296ebe688c122cee8921af9e20,a1fb668,v24.18.0,Darwin 23.1.0,,,,"bash -c 'cd vibe/vscode/extensions/vibe-chandra && PATH=""$PWD/../../../.toolchain/node/bin:$PATH"" npm test'",600,"bash -c 'cd vibe/vscode/extensions/vibe-chandra && PATH=""$PWD/../../../.toolchain/node/bin:$PATH"" npm test'",2.825,0,3d1e91d8f8683ea0bf701f0ec761c2d24cdccd4fff5824b68cace1dcdcacb6a2,"-read, a paper that is deleted, a paper that appears (0.479834ms)
+✔ ledger service: a read error keeps the rows already known and says so (0.304667ms)
+✔ ledger service: the papers option narrows the fold, not the discovery; folders merge by node id (0.931291ms)
+✔ ledger service: changes that arrive during a refresh are merged into exactly one follow-up (2.920375ms)
+✔ page: a strict policy, the mount point, the stylesheets and the module script (1.093375ms)
+✔ page: everything interpolated is escaped (0.108291ms)
+✔ targets: a reference into the workspace is a safe relative path with an optional line range (0.9435ms)
+✔ targets: evidence is a commit citation, a link, a file, or just words (0.279834ms)
+✔ targets: a task file is looked for in every project of the results directory (0.150916ms)
+✔ targets: what the view asks to open becomes a plan the host can carry out (0.132125ms)
+✔ targets: the latest row of a node in nodes.jsonl, by physical line (0.135917ms)
+✔ fit: text that fits is untouched, longer text keeps its head and tail (19.062375ms)
+✔ wrapTwo: breaks after a separator, at most two lines, each within the width (0.60475ms)
+✔ tree: groups follow the working order, ready nodes lead their group, failing ones follow (0.912333ms)
+✔ tree: a node row says what a glance at the graph would say (0.171083ms)
+✔ tree: several papers keep their namespace in the label; lookups find a node and its group (3.607875ms)
+✔ status bar: solid over total, ready, failing; the totals are the active nodes, failing is what the graph marks (0.389083ms)
+✔ typecheck: tsconfig.json (645.955792ms)
+✔ typecheck: src/view/tsconfig.json (591.747209ms)
+✔ typecheck: test/tsconfig.json (685.515208ms)
+✔ typecheck: harness/tsconfig.json (605.489292ms)
+ℹ tests 112
+ℹ suites 0
+ℹ pass 112
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 2707.132792
+npm warn Unknown project config ""timeout"". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+",2026-09-18T09:38:52+00:00
+2026-09-18T09:39:38.139615+00:00,vibe,vibe::package,2,V10,a1fb668,software,solid,Package the darwin-arm64 app and install the vibe command,0c002a2,"[""vibe::visual""]",worker,tests_failed,True,0,0,"Promoted on commit 0c002a2: 'python3.13 -m pytest tests/test_vibe_package.py && vibe/scripts/verify-package.sh' exits 0 in 2.95 s - 37 packaging tests pass, then nine ok: lines from the package verifier. vibe/scripts/package.sh ran gulp vscode-darwin-arm64 to exit 0 in 2.28 min and produced 'vibe/VSCode-darwin-arm64/Vibe Studio Code.app'; the nine checks cover the bundle, the identifier dev.chandra.vibe, the product identity (nameLong 'Vibe Studio Code', applicationName 'vibe'), the Open VSX gallery service and item URLs, the bundled vibe-chandra extension, and the CLI at 1.129.1 / 8a7abeba6e03ea3af87bfbce9a1b7e48fed567b8. vibe is installed at /opt/homebrew/bin/vibe and resolves to the backend app; launched through it with a throwaway profile the packaged app showed the workspace bar and the graph status 'Chandra: 31/33 · 1 ready · 0 failing'. [OPEN] the bundle is ad-hoc signed only, not notarized. [OPEN] the packaged commit and date are the upstream pin's, so they do not identify a Vibe build. [OPEN] the upstream OSS app icon is still in place.",row 03b8e8fcabe10bef9b20c6ccc169999fc0160c94b0da97a5e07dd013bdf6da7e,03b8e8fcabe10bef9b20c6ccc169999fc0160c94b0da97a5e07dd013bdf6da7e,0c002a2,v24.18.0,Darwin 23.1.0,9.0.2,3.13.2,,bash -c 'python3.13 -m pytest tests/test_vibe_package.py && vibe/scripts/verify-package.sh',600,bash -c 'python3.13 -m pytest tests/test_vibe_package.py && vibe/scripts/verify-package.sh',2.878,0,f91be727234cedfc2236ab6a9b460c1050732039001bc19fca91aad24df5e28f,".....................................                                    [100%]
+37 passed in 2.23s
+ok: bundle /Users/hyw/Chandra/vibe/VSCode-darwin-arm64/Vibe Studio Code.app
+ok: identifier dev.chandra.vibe
+ok: product.json nameLong = Vibe Studio Code
+ok: product.json applicationName = vibe
+ok: product.json extensionsGallery.serviceUrl = https://open-vsx.org/vscode/gallery
+ok: product.json extensionsGallery.itemUrl = https://open-vsx.org/vscode/item
+ok: extension vibe-chandra (main ./dist/extension -> ./dist/extension.js, media/graph.js, media/graph.css)
+ok: cli /Users/hyw/Chandra/vibe/VSCode-darwin-arm64/Vibe Studio Code.app/Contents/Resources/app/bin/code -> 1.129.1 / 8a7abeba6e03ea3af87bfbce9a1b7e48fed567b8
+ok: commit is the pinned 8a7abeba6e03ea3af87bfbce9a1b7e48fed567b8
+",2026-09-18T09:39:35+00:00

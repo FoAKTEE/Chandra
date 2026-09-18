@@ -15,3 +15,178 @@ timestamp,paper,node_id,node_seq,task_id,git_commit,domain,status,summary,eviden
 2026-09-18T07:55:28.354061+00:00,vibe,vibe::build,2,V1,5d341dc,software,solid,"Pinned Node toolchain, npm ci, compile and launch the unmodified dev build from the checkout",c849a4f,"[""vibe::scaffold""]",worker,build_exit_code,True,0,0,"This node ships no source of its own; its bootstrap and build scripts and the upstream pin land with commit c849a4f. Measured: npm ci exit 0 in 1m44s under Node v24.18.0, npm run compile 0 errors in 20 s, dev build launched with the workbench up over CDP in ~6 s (screenshot /tmp/chandra/vibe/base.png, not committed). The built checkout is gitignored, so the verification command asserts the pinned Node version, the compiled out/main.js, the Electron app bundle, and that vibe/vscode HEAD equals the pinned upstream commit.",row 8d682c2616b6ec89abe8516a099fe094030f7d53449244c55b841304e861b3c0,8d682c2616b6ec89abe8516a099fe094030f7d53449244c55b841304e861b3c0,c849a4f,v24.18.0,Darwin 23.1.0,,,8a7abeba6e03ea3af87bfbce9a1b7e48fed567b8,"bash -c 'test ""$(vibe/.toolchain/node/bin/node --version)"" = v24.18.0 && test -f vibe/vscode/out/main.js && test -d ""vibe/vscode/.build/electron/Vibe Studio Code.app"" && git -C vibe/vscode rev-parse HEAD | grep -qx 8a7abeba6e03ea3af87bfbce9a1b7e48fed567b8'",120,"bash -c 'test ""$(vibe/.toolchain/node/bin/node --version)"" = v24.18.0 && test -f vibe/vscode/out/main.js && test -d ""vibe/vscode/.build/electron/Vibe Studio Code.app"" && git -C vibe/vscode rev-parse HEAD | grep -qx 8a7abeba6e03ea3af87bfbce9a1b7e48fed567b8'",0.099,0,e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855,,2026-09-18T07:55:28+00:00
 2026-09-18T07:55:57.024034+00:00,vibe,vibe::branding,2,V2,5d341dc,software,solid,"product.json identity (Vibe Studio Code, applicationName vibe, .vibe data dir, Open VSX gallery) and the vibe CLI launcher",2d9bdd9,"[""vibe::build""]",worker,tests_failed,True,0,0,"Promoted on commit 2d9bdd9: 38 branding tests pass in 0.95 s. The branded dev build ran as 'Vibe Studio Code.app' (process Vibe, CFBundleIdentifier dev.chandra.vibe) and the Extensions view returned live Open VSX results (screenshots /tmp/chandra/vibe/brand.png and brand-ext.png, not committed). [OPEN] upstream gulp hygiene rejects the extensionsGallery block in product.json. [OPEN] .vscode/launch.json, the debian postinst script and some fallback strings still say code-oss; none is on the macOS build path exercised here.",row aa3694d18c8d9718847da3e163a91bdb5ba68ef4e71cb849e1bd4bdb42833da4,aa3694d18c8d9718847da3e163a91bdb5ba68ef4e71cb849e1bd4bdb42833da4,2d9bdd9,v24.18.0,Darwin 23.1.0,9.0.2,3.13.2,,python3.13 -m pytest tests/test_vibe_branding.py -q,300,python3.13 -m pytest tests/test_vibe_branding.py -q,1.951,0,8e0dd3e259f68c193f05e3e04acef6407a9ed36e5124438d9f9a04fbd0db33db,"......................................                                   [100%]
 ",2026-09-18T07:55:55+00:00
+2026-09-18T09:06:35.969901+00:00,vibe,vibe::wsbar-model,2,V3,036684e,software,solid,"Workspace-bar common model: entry identity from URI, host grouping, ordering, MRU; unit-tested without Electron",5d341dc,"[""vibe::build""]",worker,tests_failed,True,0,0,"Promoted on commit 5d341dc: 55 model tests pass in 0.22 s under the upstream mocha node runner ('55 passing (18ms)'). 12 hand mutations of the model were all killed by the suite; eslint, valid-layers-check and hygiene are clean on the touched files. The model is pure common/ logic, so it runs without Electron.",row ba1b5a63d8d778b7c36351b6aeb9a7c4f9764d36f49e33b446f97037f9a964a2,ba1b5a63d8d778b7c36351b6aeb9a7c4f9764d36f49e33b446f97037f9a964a2,5d341dc,v24.18.0,Darwin 23.1.0,,,,"bash -c 'cd vibe/vscode && PATH=""$PWD/../.toolchain/node/bin:$PATH"" npm run test-node -- --run src/vs/platform/workspaceBar/test/common/workspaceBarModel.test.ts'",600,"bash -c 'cd vibe/vscode && PATH=""$PWD/../.toolchain/node/bin:$PATH"" npm run test-node -- --run src/vs/platform/workspaceBar/test/common/workspaceBarModel.test.ts'",0.301,0,e852673e2bd007546166abbbf979ffdd67f597b5afd9297abf09d59241a6fbe0,"ther one of the same host
+      ✔ without a target moves to the end of the own host group
+      ✔ a target on another host is clamped to the own host group
+      ✔ no-ops and unknown ids report no change
+      ✔ user order survives windows closing and opening
+    pin, unpin, remove
+      ✔ pin and unpin an open entry
+      ✔ unpinning a closed entry makes it disappear
+      ✔ removing an open entry only unpins it
+      ✔ removing a pinned closed entry deletes it
+    persisted state
+      ✔ only pinned entries are persisted, in order, and restored as closed
+      ✔ unpinned entries are never persisted
+      ✔ restored entries are bound to the windows that open them
+      ✔ corrupt or older state yields an empty model and never throws
+      ✔ invalid entries are skipped, valid ones survive
+      ✔ state written by a newer version is read on a best effort basis
+    wire format
+      ✔ entries survive JSON marshalling
+      ✔ groupWorkspaceBarEntries groups by host in order of appearance
+
+  Errors
+    ✔ should not have unexpected errors in tests
+
+
+  55 passing (14ms)
+
+npm warn Unknown project config ""disturl"". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+npm warn Unknown project config ""target"". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+npm warn Unknown project config ""ms_build_id"". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+npm warn Unknown project config ""runtime"". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+npm warn Unknown project config ""build_from_source"". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+npm warn Unknown project config ""timeout"". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+",2026-09-18T09:06:35+00:00
+2026-09-18T09:08:00.074540+00:00,vibe,vibe::wsbar-main,2,V4,036684e,software,solid,"Main-process workspace-bar service: tracks windows, persists pinned entries, single-frame window switching, IPC channel",82bf6e0,"[""vibe::wsbar-model""]",worker,tests_failed,True,0,0,"Promoted on commit 82bf6e0: 28 electron-main service tests pass in 1.41 s (' 28 passing (27ms)'). In the running app the main process sampled the visible window set every 1 ms across two switches (about 6100 samples): the visible set was exactly one window at every sample, the bounds were identical, and both renderers stayed alive; relaunching with three windows restored exactly one visible window. 19 hand mutations of the service, 17 killed, the 2 survivors redundant guards. Two real failures were fixed on the way and are recorded as trials 1 and 2 under this node: an ordinary window close never reached the service because upstream's onDidDestroyWindow fires only for crashed windows (now a per-window onDidClose, with test doubles that mirror upstream's real event ordering), and a takeover through another window's own show left two windows visible for about 200 ms because macOS reports show about 200 ms late (focus is now a takeover trigger too, overlap about 16 ms). [OPEN] native fullscreen, the missing-folder modal, remote hosts and non-macOS maximize are not smoke-tested. [OPEN] a quit veto raised with a custom dialog style from a hidden window needs a renderer hook.",row 0bd3ccecc954df7d501a8e5fdf8d8a9f205f840cf6a32f18f85d29ba3db412a5,0bd3ccecc954df7d501a8e5fdf8d8a9f205f840cf6a32f18f85d29ba3db412a5,82bf6e0,v24.18.0,Darwin 23.1.0,,,,"bash -c 'cd vibe/vscode && PATH=""$PWD/../.toolchain/node/bin:$PATH"" VSCODE_SKIP_PRELAUNCH=1 ./scripts/test.sh --run src/vs/platform/workspaceBar/test/electron-main/workspaceBarMainService.test.ts'",600,"bash -c 'cd vibe/vscode && PATH=""$PWD/../.toolchain/node/bin:$PATH"" VSCODE_SKIP_PRELAUNCH=1 ./scripts/test.sh --run src/vs/platform/workspaceBar/test/electron-main/workspaceBarMainService.test.ts'",1.289,0,7bcbf752f43680a566be39f38470fd69ea5a450045d1e23d1438ba128a7d1da2,"s while they close[0m
+    [32m  ✔[0m[90m (f) restored windows: all but the one that is focused last start hidden[0m
+    [32m  ✔[0m[90m (g) a hidden window that gets focused takes over the frame[0m
+    [32m  ✔[0m[90m (g) focus tells as well that a hidden window was shown[0m
+    [32m  ✔[0m[90m (g) a window that someone else opens joins the frame as well[0m
+    [32m  ✔[0m[90m (g) extension development and agents windows stay on their own[0m
+    [32m  ✔[0m[90m hidden windows follow the frame when it moves or resizes[0m
+    [32m  ✔[0m[90m auxiliary windows are hidden and shown with their window[0m
+    [32m  ✔[0m[90m listeners go away with the windows[0m
+[0m    window.singleFrame: false[0m
+    [32m  ✔[0m[90m windows are left alone and switching focuses[0m
+    [32m  ✔[0m[90m changing the setting shows all windows or gathers them in one frame[0m
+
+
+[92m [0m[32m 28 passing[0m[90m (27ms)[0m
+
+[99852:0918/020759.242747:INFO:CONSOLE:2] ""The vm module of Node.js is unsupported in Electron's renderer process due to incompatibilities with the Blink rendering engine. Crashes are likely and avoiding the module is highly recommended. This module may be removed in a future release."", source: node:electron/js2c/renderer_init (2)
+[99852:0918/020759.675782:INFO:CONSOLE:2] ""The vm module of Node.js is unsupported in Electron's renderer process due to incompatibilities with the Blink rendering engine. Crashes are likely and avoiding the module is highly recommended. This module may be removed in a future release."", source: node:electron/js2c/renderer_init (2)
+(node:99857) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
+(Use `Vibe Helper (Renderer) --trace-deprecation ...` to show where the warning was created)
+(node:99857) [DEP0025] DeprecationWarning: sys is deprecated. Use util instead.
+(node:99857) ExperimentalWarning: WASI is an experimental feature and might change at any time
+",2026-09-18T09:07:58+00:00
+2026-09-18T09:08:24.589921+00:00,vibe,vibe::wsbar-part,2,V5,036684e,software,solid,"Workbench part under the title bar: host-grouped workspace tabs, add/pin/close, commands and visibility setting",036684e,"[""vibe::wsbar-main""]",worker,tests_failed,True,0,0,"Promoted on commit 036684e: 10 view-model tests pass ('  10 passing (5ms)') and vibe/scripts/check.sh reports 'check: tracked state matches …/vibe/vscode', so the tracked patches and overlay still reproduce the checkout. In the running app the bar was inspected in five themes with 3 open folders and 12 seeded pinned entries; clicking a tab switches the window and the active tab moves with it. typecheck-client reports 0 errors. [OPEN] no full compile-client was run for this node. [OPEN] the bar is not part of F6 navigation. [OPEN] the Windows and Linux keybindings are untested.",row 82422f2e224529460d1b00fa750338a0e4348845e03ef3eac6e343bf7bcb719b,82422f2e224529460d1b00fa750338a0e4348845e03ef3eac6e343bf7bcb719b,036684e,v24.18.0,Darwin 23.1.0,,,,"bash -c 'cd vibe/vscode && PATH=""$PWD/../.toolchain/node/bin:$PATH"" VSCODE_SKIP_PRELAUNCH=1 ./scripts/test.sh --run src/vs/workbench/test/browser/parts/workspacebar/workspaceBarViewModel.test.ts && cd ../.. && vibe/scripts/check.sh'",600,"bash -c 'cd vibe/vscode && PATH=""$PWD/../.toolchain/node/bin:$PATH"" VSCODE_SKIP_PRELAUNCH=1 ./scripts/test.sh --run src/vs/workbench/test/browser/parts/workspacebar/workspaceBarViewModel.test.ts && cd ../.. && vibe/scripts/check.sh'",1.68,0,630cb0483971423808adfd6ba6abecd9d68159b1c8bd40e519bb0da09da918b4," are clean at the start of test running[0m
+
+[0m  WorkspaceBarViewModel[0m
+  [32m  ✔[0m[90m entries become host groups with tabs that know their state[0m
+  [32m  ✔[0m[90m a window without workspace has no active tab[0m
+  [32m  ✔[0m[90m tabs describe themselves to assistive technology[0m
+  [32m  ✔[0m[90m the render key changes with what is shown and with nothing else[0m
+  [32m  ✔[0m[90m next and previous wrap around, a window without workspace enters at either end[0m
+  [32m  ✔[0m[90m closing the own window switches to the most recently used one first[0m
+  [32m  ✔[0m[90m the path to copy is what a terminal on the host understands[0m
+  [32m  ✔[0m[90m picks to add a workspace: actions, then what was recently opened[0m
+  [32m  ✔[0m[90m picks without anything to connect to and without history[0m
+
+
+[92m [0m[32m 10 passing[0m[90m (5ms)[0m
+
+check: tracked state matches /Users/hyw/Chandra/vibe/vscode
+[2195:0918/020823.334490:INFO:CONSOLE:2] ""The vm module of Node.js is unsupported in Electron's renderer process due to incompatibilities with the Blink rendering engine. Crashes are likely and avoiding the module is highly recommended. This module may be removed in a future release."", source: node:electron/js2c/renderer_init (2)
+[2195:0918/020823.623936:INFO:CONSOLE:2] ""The vm module of Node.js is unsupported in Electron's renderer process due to incompatibilities with the Blink rendering engine. Crashes are likely and avoiding the module is highly recommended. This module may be removed in a future release."", source: node:electron/js2c/renderer_init (2)
+(node:2200) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
+(Use `Vibe Helper (Renderer) --trace-deprecation ...` to show where the warning was created)
+(node:2200) [DEP0025] DeprecationWarning: sys is deprecated. Use util instead.
+(node:2200) ExperimentalWarning: WASI is an experimental feature and might change at any time
+",2026-09-18T09:08:22+00:00
+2026-09-18T09:08:56.044865+00:00,vibe,vibe::dag-model,2,V6,036684e,software,solid,"Ledger fold to a hypergraph model: AND-join hyperedges, ghost nodes, SCC/cycle analysis, frontier, closures, routes",e4729a1,"[""vibe::scaffold""]",worker,tests_failed,True,0,0,"Promoted on commit e4729a1: the four model suites (jsonl, fold, cycles, derived) report 'pass 42 / fail 0' in 0.27 s. Cross-check against the canonical reader: the fold deep-equals the output of python3 _common/knowledge_database.py query on paper self (22 rows), paper vibe (11) and paper synth (11), so the extension and the Python CLI cannot disagree about ledger state. Cycles are legal input and are reported as SCCs rather than rejected. [OPEN] this model's frontier definition differs from the orchestrator's readyFrontier on nodes that sit on or behind a cycle.",row b13c673b89d1fca7f3a49c9142e827f27834ea01f529d36a1a24925c3a525554,b13c673b89d1fca7f3a49c9142e827f27834ea01f529d36a1a24925c3a525554,e4729a1,v24.18.0,Darwin 23.1.0,,,,"bash -c 'cd vibe/vscode/extensions/vibe-chandra && PATH=""$PWD/../../../.toolchain/node/bin:$PATH"" node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test test/jsonl.test.ts test/fold.test.ts test/cycles.test.ts test/derived.test.ts'",600,"bash -c 'cd vibe/vscode/extensions/vibe-chandra && PATH=""$PWD/../../../.toolchain/node/bin:$PATH"" node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test test/jsonl.test.ts test/fold.test.ts test/cycles.test.ts test/derived.test.ts'",0.206,0,8d14f16dcef9b5404b43a8a58502333c8da991178234d6febddc8369f4d8c4d1,"snapshot: 22 solid nodes, a 5-source join, claims attached, no ghosts, no cycles (1.044208ms)
+✔ latest row wins; promotions accrue as revisions under one node (0.341375ms)
+✔ amended rows are ignored pointers; a node with only amended rows is inactive (0.267917ms)
+✔ retired hides a node from the active set; a later active row revives it (0.303833ms)
+✔ supersedes replaces the semantic payload and is recorded as lineage in both directions (0.341333ms)
+✔ ghost nodes: referenced predecessors and trial anchors without a row are kept, not dropped (0.581ms)
+✔ hyperedges: one per node carrying its full predecessor set (0.406541ms)
+✔ duplicate and malformed predecessors are normalised (0.132291ms)
+✔ trial stats and the trial list attach under the node (0.304834ms)
+✔ claims and results attach through node_ids, latest row per entry (0.238541ms)
+✔ multi-paper: several papers and _shared nodes fold into one graph (1.197875ms)
+✔ multi-paper: the same node_id claimed by two papers is reported, first owner wins (0.068334ms)
+✔ the graph is plain JSON (it crosses a postMessage boundary) (0.445917ms)
+✔ empty input folds to an empty graph (0.044875ms)
+✔ live ledgers: fold agrees with the Python query run right now (skipped outside the Chandra repo) (89.933917ms)
+✔ parseJsonl: complete lines, blank lines and CRLF are tolerated (0.68825ms)
+✔ parseJsonl: a torn final line (no newline) is dropped and reported, never thrown (0.086542ms)
+✔ parseJsonl: a final line without newline is torn even when it parses (the writer appends row + newline in one write) (0.060542ms)
+✔ parseJsonl: a newline-terminated final line that does not parse is a torn tail (0.077458ms)
+✔ parseJsonl: malformed interior lines are reported with their line number and skipped (0.086ms)
+✔ parseJsonl: empty and garbage input never throw (0.118333ms)
+✔ parseJsonl: bad-line text is truncated so a report stays small (0.085625ms)
+ℹ tests 42
+ℹ suites 0
+ℹ pass 42
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 175.208209
+",2026-09-18T09:08:55+00:00
+2026-09-18T09:09:19.079663+00:00,vibe,vibe::dag-view,2,V7,036684e,software,solid,"Dependency-free layered hypergraph layout and SVG view: junction routing, loop-backs, focus/reach/route, theme variables, browser harness",2d023ee,"[""vibe::dag-model""]",worker,tests_failed,True,0,0,"Promoted on commit 2d023ee: the three view suites (layout, hashState, text) report 'pass 22 / fail 0' in 0.37 s. Performance: 500 nodes and 976 edges lay out in about 15 ms against a 300 ms budget, and the layout is deterministic — the same input yields the same coordinates. The layout has no runtime dependency and runs unmodified in the plain browser harness page. [OPEN] the DOM renderer has no unit tests; it is covered only by scripted headless checks and screenshots.",row aa499018895dc613dc12620574172eb6360928e9e00464f01e97fec997cc1181,aa499018895dc613dc12620574172eb6360928e9e00464f01e97fec997cc1181,2d023ee,v24.18.0,Darwin 23.1.0,,,,"bash -c 'cd vibe/vscode/extensions/vibe-chandra && PATH=""$PWD/../../../.toolchain/node/bin:$PATH"" node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test test/layout.test.ts test/hashState.test.ts test/text.test.ts'",600,"bash -c 'cd vibe/vscode/extensions/vibe-chandra && PATH=""$PWD/../../../.toolchain/node/bin:$PATH"" node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test test/layout.test.ts test/hashState.test.ts test/text.test.ts'",0.353,0,4f7a8bebe12517edfddb9caac656a0c105e562bf09afbe07da097cad66acda7f,"✔ hash state: the documented forms (0.807125ms)
+✔ hash state round-trips every field, including hostile ids (0.182875ms)
+✔ hash state: defaults are omitted, so an untouched view keeps a clean URL (0.062ms)
+✔ hash state: malformed input never throws and unknown keys are ignored (0.13325ms)
+✔ hash state: reach without a focus is meaningless and dropped (0.056875ms)
+✔ hash state: the default direction is the host's, and only a departure from it is written down (0.083ms)
+stress layout: 500 nodes, 976 edges, 2350 segments, 1097 dummies, 38 layers, 5618 crossings; worst of 5 runs 14.6 ms (median 13.6 ms)
+✔ layout invariants: self (lr) (2.227917ms)
+✔ layout invariants: synth (lr) (0.618708ms)
+✔ layout invariants: merged (lr) (1.05975ms)
+✔ layout invariants: stress (lr) (39.982792ms)
+✔ layout invariants: self (td) (0.413708ms)
+✔ layout invariants: synth (td) (0.225708ms)
+✔ layout invariants: merged (td) (0.428083ms)
+✔ layout invariants: stress (td) (29.837625ms)
+✔ layout is deterministic for identical input (38.500667ms)
+✔ a 5-source join is one junction: five branches in, one arrow out (0.35125ms)
+✔ long edges share one trunk per source instead of one dummy chain per edge (16.458958ms)
+✔ isolated nodes are packed into a block instead of stretching the first layer (0.432584ms)
+✔ degenerate inputs lay out without throwing (0.286709ms)
+✔ 500 nodes / ~1500 edge segments lay out within the 300 ms budget (85.610916ms)
+✔ fit: text that fits is untouched, longer text keeps its head and tail (5.399166ms)
+✔ wrapTwo: breaks after a separator, at most two lines, each within the width (0.802833ms)
+ℹ tests 22
+ℹ suites 0
+ℹ pass 22
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 322.012709
+",2026-09-18T09:09:18+00:00
+2026-09-18T09:09:45.719482+00:00,vibe,vibe::dag-integration,2,V8,036684e,software,solid,"Built-in extension integration: Chandra activity-bar view, editor panel, live ledger watcher, node drill-down to files",4856de5,"[""vibe::dag-view"", ""vibe::build""]",worker,tests_failed,True,0,0,"Promoted on commit 4856de5: the extension's whole suite reports 'pass 101 / fail 0' in 2.91 s, including the four typecheck projects (extension, view, test, harness). In the running app the live mission DAG rendered as 11 nodes, 3 solid and 8 hypothesis (paper vibe as it stood at this node, before the promotions of this batch); appending a ledger row made the new node visible in 254 to 345 ms with no reload; a torn final ledger line left the graph unchanged; the extension host and webview consoles showed no errors and the webview CSP was enforced. [OPEN] full darwin packaging had not been run at the time of this node.",row 8f24ce45077421b1ef7a14ee022b1b6f0170da4836223227a2ca37e52a9f60e2,8f24ce45077421b1ef7a14ee022b1b6f0170da4836223227a2ca37e52a9f60e2,4856de5,v24.18.0,Darwin 23.1.0,,,,"bash -c 'cd vibe/vscode/extensions/vibe-chandra && PATH=""$PWD/../../../.toolchain/node/bin:$PATH"" npm test'",600,"bash -c 'cd vibe/vscode/extensions/vibe-chandra && PATH=""$PWD/../../../.toolchain/node/bin:$PATH"" npm test'",2.818,0,5cbdedf2fc8f0f806330520f5e513fa1f287980c9e3cf3911580856867e21fe8,"d-read, a paper that is deleted, a paper that appears (0.459542ms)
+✔ ledger service: a read error keeps the rows already known and says so (0.229125ms)
+✔ ledger service: the papers option narrows the fold, not the discovery; folders merge by node id (0.288917ms)
+✔ ledger service: changes that arrive during a refresh are merged into exactly one follow-up (2.116458ms)
+✔ page: a strict policy, the mount point, the stylesheets and the module script (0.999667ms)
+✔ page: everything interpolated is escaped (0.103083ms)
+✔ targets: a reference into the workspace is a safe relative path with an optional line range (1.000667ms)
+✔ targets: evidence is a commit citation, a link, a file, or just words (0.283625ms)
+✔ targets: a task file is looked for in every project of the results directory (0.152ms)
+✔ targets: what the view asks to open becomes a plan the host can carry out (0.127041ms)
+✔ targets: the latest row of a node in nodes.jsonl, by physical line (0.140541ms)
+✔ fit: text that fits is untouched, longer text keeps its head and tail (19.653708ms)
+✔ wrapTwo: breaks after a separator, at most two lines, each within the width (0.958458ms)
+✔ tree: groups follow the working order, ready nodes lead their group, failing ones follow (0.923625ms)
+✔ tree: a node row says what a glance at the graph would say (0.183958ms)
+✔ tree: several papers keep their namespace in the label; lookups find a node and its group (1.94475ms)
+✔ status bar: solid over total, ready, failing; the totals are the active nodes, failing is what the graph marks (0.362292ms)
+✔ typecheck: tsconfig.json (706.706042ms)
+✔ typecheck: src/view/tsconfig.json (596.695125ms)
+✔ typecheck: test/tsconfig.json (695.575416ms)
+✔ typecheck: harness/tsconfig.json (599.129458ms)
+ℹ tests 101
+ℹ suites 0
+ℹ pass 101
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 2696.659625
+npm warn Unknown project config ""timeout"". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+",2026-09-18T09:09:42+00:00

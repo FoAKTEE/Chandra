@@ -19,3 +19,22 @@ progress/
 .claude/alignment_inject_state.json
 orchestrator/node_modules/
 orchestrator/dist/
+
+# Overleaf Connect
+.overleafconnect
+*.aux
+*.log
+*.synctex.gz
+*.fls
+*.fdb_latexmk
+*.bbl
+*.blg
+*.out
+*.toc
+*.pdf
+*.nav
+*.snm
+*.vrb
+*.lot
+*.lof
+%OUTDIR%/

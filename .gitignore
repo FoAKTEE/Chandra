@@ -43,5 +43,6 @@ orchestrator/dist/
 vibe/vscode/
 vibe/.toolchain/
 vibe/.build/
+vibe/VSCode-*/
 # Overlay files are tracked verbatim: no rule above (*.log, progress/, *-database/, ...) may hide one.
 !vibe/overlay/**

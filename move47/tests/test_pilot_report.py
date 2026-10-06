@@ -46,13 +46,13 @@ def _session(jd: Path, cost: float, cw: int) -> None:
     (jd / "session.jsonl").write_text("\n".join(json.dumps(x) for x in lines) + "\n")
 
 
-def make_run(tmp_path: Path, run_id: str, plays: list[str], t0: float) -> Path:
+def make_run(tmp_path: Path, run_id: str, plays: list[str], t0: float, model: str = "m") -> Path:
     """Runner layout: two finished searches (our plies 1 and 3) and one still running (ply 5)."""
     from gotree.dag import DAG
     run = tmp_path / "pilot"
     (run / "logs").mkdir(parents=True)
     (run / "logs" / "run.json").write_text(json.dumps({"id": run_id, "name": "synthetic pilot",
-                                                       "model": "m", "harness": "tree"}))
+                                                       "model": model, "harness": "tree"}))
     tree = run / "workspace" / "tree"
     tree.mkdir(parents=True)
     dag = DAG(str(tree / "dag.db"))
@@ -152,6 +152,38 @@ def test_cli_prints_json_and_markdown_without_tokens(tmp_path, arena):
     local = subprocess.run([sys.executable, str(ROOT / "scripts/pilot_report.py"), str(rd), "--arena", "",
                             "--format", "md"], capture_output=True, text=True, check=True).stdout
     assert "arena: not queried" in local and "| 3 |" in local
+
+
+def test_model_label_and_path_root_rename_the_model_and_relativize_paths_only_when_asked(tmp_path, arena):
+    _, url, adir = arena
+    from harness.arena_client import ArenaClient
+    model = "vendor-model-9-9"
+    run = ArenaClient(url, admin_token=ADMIN).create_run(name="labelled", model=model, target_games=1)["run"]
+    rd = make_run(tmp_path, run["id"], _play_two(url, run), time.time() - 1000, model=model)
+    rep = pilot_report.build(rd, url, pilot_report.read_token(adir))
+    assert pilot_report.relabel(rep) is rep and "display" not in rep               # default: unchanged
+    plain = json.dumps(rep, default=str) + pilot_report.markdown(rep)
+    assert model in plain and str(tmp_path) in plain
+    assert rep["arena"]["summary"]["model"] == model and \
+        any((e.get("data") or {}).get("model") == model for e in rep["arena"]["events"])
+
+    lab = pilot_report.relabel(rep, "Model 9", str(tmp_path))
+    assert lab is not rep and rep["run"]["model"] == model                           # the input is not modified
+    assert lab["run"]["model"] == "Model 9" and lab["arena"]["summary"]["model"] == "Model 9"
+    assert (lab["run_dir"], lab["tree_dir"]) == ("pilot", "pilot/workspace/tree")
+    assert lab["display"] == {"model_label": "Model 9", "paths": "relative to --path-root"}
+    md = pilot_report.markdown(lab)
+    for text in (json.dumps(lab, default=str), md):
+        assert model not in text and str(tmp_path) not in text and VIEWER not in text and ADMIN not in text
+    assert "(model Model 9, harness tree)" in md and "- display: model named by its label" in md
+    assert lab["totals"] == rep["totals"] and lab["games"][0]["sgf"] == rep["games"][0]["sgf"]   # numbers kept
+    only_paths = pilot_report.relabel(rep, path_root=str(tmp_path))
+    assert only_paths["run"]["model"] == model and only_paths["display"]["model_label"] is None
+
+    out = subprocess.run([sys.executable, str(ROOT / "scripts/pilot_report.py"), str(rd), "--arena", url,
+                          "--arena-dir", str(adir), "--model-label", "Model 9", "--path-root", str(tmp_path)],
+                         capture_output=True, text=True, check=True).stdout
+    assert model not in out and str(tmp_path) not in out and "(model Model 9, harness tree)" in out
 
 
 def test_guard_pauses_the_run_and_stops_the_runner_group_above_the_cap(tmp_path, arena):

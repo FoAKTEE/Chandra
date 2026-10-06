@@ -2,6 +2,7 @@
 """pilot_report.py: what a tree-harness arena run did, move by move (finished or mid-game).
 
   python3 scripts/pilot_report.py RUN_DIR [--arena URL] [--arena-dir DIR] [--format both|json|md]
+                                 [--model-label LABEL] [--path-root DIR]
 
 RUN_DIR is the runner's --run-dir: logs/run.json (arena run id) and workspace/tree/ (the gotree run:
 dag.db, moves.jsonl, jobs/<id>-<kind>-<hex>/session.jsonl).  Per search (= one of our moves): jobs
@@ -11,6 +12,11 @@ from ARENA_DIR/{viewer,admin}.token and sent only as a header, never printed): o
 arena recorded at that ply, KataGo's reply and its delay, result and reason, SGF, and, once the game is
 finished and reviewed, KataGo's per-move point loss for our moves.  Without the arena, the local part
 is reported and `arena.error` says why.
+
+Display options for a report that is shared as evidence (both off by default, which leaves the report
+unchanged): --model-label names the model by LABEL wherever the report would print its id (the `model`
+fields of the run metadata, the arena summary and its events), and --path-root writes every path under
+DIR relative to DIR.  A report with either option carries a `display` entry that says so.
 """
 from __future__ import annotations
 
@@ -221,6 +227,36 @@ def _game(gv: dict, srch: list[dict], events: list[dict]) -> dict:
                                                           if g["status"] != "finished" else "review pending")}
 
 
+def relabel(rep: dict, model_label: str = "", path_root: str = "") -> dict:
+    """The report with the model id shown as `model_label` and paths under `path_root` made relative to it.
+
+    Only `model` fields whose value is the run's model id (run metadata or arena summary) are renamed; with
+    neither option the report is returned as it is."""
+    if not (model_label or path_root):
+        return rep
+    ids = {m for m in ((rep.get("run") or {}).get("model"),
+                       (((rep.get("arena") or {}).get("summary")) or {}).get("model")) if m}
+    prefixes = sorted({str(Path(path_root)).rstrip("/") + "/", str(Path(path_root).resolve()).rstrip("/") + "/"},
+                      key=len, reverse=True) if path_root else []
+
+    def walk(x, key=None):
+        if isinstance(x, dict):
+            return {k: walk(v, k) for k, v in x.items()}
+        if isinstance(x, list):
+            return [walk(v) for v in x]
+        if isinstance(x, str):
+            if model_label and key == "model" and x in ids:
+                return model_label
+            for pre in prefixes:
+                x = x.replace(pre, "")
+        return x
+
+    out = walk(rep)
+    out["display"] = {"model_label": model_label or None,
+                      "paths": "relative to --path-root" if path_root else "absolute"}
+    return out
+
+
 def _f(x, nd=2):
     return "-" if x is None else (f"{x:.{nd}f}" if isinstance(x, float) else str(x))
 
@@ -235,6 +271,10 @@ def markdown(rep: dict) -> str:
          f"failed jobs {t['jobs_failed']}, jobs without a cost line {t['jobs_without_cost']}",
          f"- cost so far: {t['cost_usd']:.2f} USD; tokens in {t['tokens']['input']}, out {t['tokens']['output']}, "
          f"cache read {t['tokens']['cache_read']}, cache write {t['tokens']['cache_write']}"]
+    disp = rep.get("display")
+    if disp:
+        L.insert(4, f"- display: model {'named by its label' if disp['model_label'] else 'id as recorded'}, "
+                    f"paths {disp['paths']}")
     pm = t.get("per_finished_move")
     if pm:
         L.append(f"- per finished move: {pm['cost_usd']:.2f} USD, {pm['seconds']:.0f} s, {pm['jobs']} jobs")
@@ -286,9 +326,11 @@ def main(argv=None) -> int:
     p.add_argument("--arena", default="http://127.0.0.1:8765", help="arena URL ('' = local data only)")
     p.add_argument("--arena-dir", default=str(DEFAULT_ARENA_DIR), help="directory with viewer.token / admin.token")
     p.add_argument("--format", choices=("both", "json", "md"), default="both")
+    p.add_argument("--model-label", default="", help="name the model LABEL instead of printing its id")
+    p.add_argument("--path-root", default="", help="write paths under DIR relative to DIR")
     a = p.parse_args(argv)
     token = read_token(Path(a.arena_dir)) if a.arena else ""
-    rep = build(Path(a.run_dir), a.arena, token)
+    rep = relabel(build(Path(a.run_dir), a.arena, token), a.model_label, a.path_root)
     if a.format in ("both", "json"):
         print(json.dumps(rep, indent=1, default=str))
     if a.format in ("both", "md"):

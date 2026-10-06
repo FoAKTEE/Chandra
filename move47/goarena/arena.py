@@ -41,6 +41,18 @@ class ArenaSettings:
     rating_window: int = 50
     allow_color_choice: bool = True
     tiers: dict[str, TierSpec] = field(default_factory=dict)
+    # Adjudication (off while adjudicate_winrate <= 0): the game ends as an agent loss when, on
+    # `adjudicate_moves` consecutive opponent moves played after ply `adjudicate_after`, the KataGo
+    # opponent's own search gave the agent a winrate below `adjudicate_winrate` AND a score lead
+    # below -`adjudicate_lead`.  Only numbers the opponent computed for its genmove are used.
+    adjudicate_winrate: float = 0.0
+    adjudicate_lead: float = 20.0
+    adjudicate_moves: int = 4
+    adjudicate_after: int = 30
+
+    @property
+    def adjudication_on(self) -> bool:
+        return self.adjudicate_winrate > 0 and self.adjudicate_moves > 0
 
     @property
     def rated_tiers(self) -> set[str]:
@@ -281,7 +293,37 @@ class Arena:
         if self._game_should_end(board):
             return coord, self._finish(run, self.store.game(game["id"]), board, reason="score",
                                        extra={"opponent_move": coord})
+        if self._decided(game["id"]):
+            return coord, self._finish(run, self.store.game(game["id"]), board, winner_is_agent=False,
+                                       reason="adjudicated", extra={"opponent_move": coord})
         return coord, None
+
+    def _decided(self, game_id: int) -> bool:
+        """Adjudication rule (see ArenaSettings).  Stateless: it reads the evaluations the opponent
+        stored with its last moves (move info, from the opponent's point of view), so a restart
+        neither loses nor double-counts the streak.  Nothing here is shown to the agent."""
+        s = self.s
+        if not s.adjudication_on:
+            return False
+        rows = self.store.q("SELECT ply, info FROM moves WHERE game_id=? AND actor='opponent' "
+                            "ORDER BY ply DESC LIMIT ?", (game_id, int(s.adjudicate_moves)))
+        if len(rows) < s.adjudicate_moves:
+            return False
+        evals = []
+        for r in rows:
+            if r["ply"] <= s.adjudicate_after:
+                return False
+            try:
+                info = json.loads(r["info"]) if r["info"] else {}
+                agent_wr, agent_lead = 1.0 - float(info["winrate"]), -float(info["score_lead"])
+            except (ValueError, TypeError, KeyError):
+                return False      # a move without an engine evaluation breaks the streak
+            if not (agent_wr < s.adjudicate_winrate and agent_lead < -s.adjudicate_lead):
+                return False
+            evals.append((r["ply"], round(agent_wr, 4), agent_lead))
+        log.info("game %s adjudicated: agent (ply, winrate, lead) on the last %d opponent moves: %s",
+                 game_id, len(evals), evals)
+        return True
 
     def _finish(self, run: dict, game: dict, board: Board, *, winner_is_agent: Optional[bool] = None,
                 reason: str = "score", extra: Optional[dict] = None) -> dict:

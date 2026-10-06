@@ -1,0 +1,47 @@
+{
+  "_comment": "Real-KataGo ladder for 9x9, Chinese rules, komi 7.5 (MISSION.md section 2). Serve it with the strong net engines/models/kata1-tf3-b11c768-s11003M-d5973M-7gres.bin.gz (GPU, through kgservice: scripts/arena_up.sh); the tier file cannot check the net, the arena command line must. Every tier is unrated (counts_for_rating false). k1-* are UNCALIBRATED: no Elo is claimed for them. random/greedy keep their measured Elo from config/tiers-9x9.json (2026-10-05, b10c128 pool, anchor random = 0). Semantics (goarena/opponents.py): temperature 0 with visits 1 plays the argmax of the raw policy over legal moves that do not fill an own eye (no sampling); root_symmetries 8 averages the root network evaluation over all 8 board symmetries, so k1-p's move is a fixed function of the position instead of depending on the random symmetry (nnRandomize) of whichever backend evaluates it. With visits > 1 and temperature 0 the tier plays KataGo's best move. After an agent pass, tiers with fewer than 16 visits decide whether to pass with a 32-visit check. KataGo tiers resign at own winrate < 2% and lead < -15 for 3 consecutive moves after ply 27 (TierSpec defaults).",
+  "_model": "kata1-tf3-b11c768-s11003M-d5973M-7gres.bin.gz",
+  "tiers": {
+    "random": {
+      "label": "Random",
+      "kind": "random",
+      "elo": 0,
+      "elo_se": 0,
+      "counts_for_rating": false,
+      "description": "uniform random legal move (never fills its own eyes)"
+    },
+    "greedy": {
+      "label": "Greedy",
+      "kind": "greedy",
+      "elo": 668,
+      "elo_se": 78,
+      "counts_for_rating": false,
+      "description": "one-ply tactics: capture, escape atari, avoid self-atari; no search"
+    },
+    "k1-p": {
+      "label": "KataGo kata1 policy",
+      "kind": "katago",
+      "visits": 1,
+      "temperature": 0.0,
+      "root_symmetries": 8,
+      "counts_for_rating": false,
+      "description": "strong KataGo network, raw policy: best policy move, no search"
+    },
+    "k1-64": {
+      "label": "KataGo kata1 64 visits",
+      "kind": "katago",
+      "visits": 64,
+      "temperature": 0.0,
+      "counts_for_rating": false,
+      "description": "strong KataGo network with a small search (64 visits)"
+    },
+    "k1-full": {
+      "label": "KataGo kata1 1600 visits",
+      "kind": "katago",
+      "visits": 1600,
+      "temperature": 0.0,
+      "counts_for_rating": false,
+      "description": "strong KataGo network with a full search (1600 visits)"
+    }
+  }
+}

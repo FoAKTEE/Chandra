@@ -8,7 +8,11 @@ Tier kinds:
   greedy  - no-engine heuristic (capture > escape atari > avoid self-atari)
   katago  - KataGo with `visits` playouts; temperature > 0 samples from the
             policy (visits == 1) or from the visit distribution (visits > 1);
-            `random_prob` mixes in uniformly random moves.
+            temperature 0 plays the policy argmax (visits == 1) or KataGo's
+            best move (visits > 1); `random_prob` mixes in uniformly random
+            moves; `root_symmetries` > 0 averages the root network evaluation
+            over that many board symmetries (8 = all: with visits == 1 the
+            policy, hence the move, is a fixed function of the position).
 
 Strength labels/Elo values in the tier file are *calibrated* numbers produced
 by `goarena calibrate` (see DESIGN.md); never trust the labels alone.
@@ -44,6 +48,7 @@ class TierSpec:
     visits: int = 1
     temperature: float = 0.0
     random_prob: float = 0.0
+    root_symmetries: int = 0             # 0 = engine default (one random symmetry per evaluation)
     resign_threshold: float = 0.02
     resign_consecutive: int = 3
     resign_min_lead: float = 15.0
@@ -160,7 +165,9 @@ class KataGoOpponent(Opponent):
         spec, color = self.spec, board.to_play
         sign = 1 if color == BLACK else -1
         visits = max(1, spec.visits)
-        res = self.kg.analyze(board, visits, policy=(visits == 1 or spec.temperature > 0))
+        kw = {"override_settings": {"rootNumSymmetriesToSample": int(spec.root_symmetries)}} \
+            if spec.root_symmetries > 0 else {}
+        res = self.kg.analyze(board, visits, policy=(visits == 1 or spec.temperature > 0), **kw)
         root = res.get("rootInfo", {})
         winrate = root.get("winrate", 0.5)
         lead = root.get("scoreLead", 0.0)

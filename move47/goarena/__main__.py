@@ -40,10 +40,12 @@ def _add_engine_args(p):
 def _settings(a):
     from .arena import ArenaSettings
     from .opponents import load_tiers
+    adj = {k: getattr(a, k) for k in ("adjudicate_winrate", "adjudicate_lead", "adjudicate_moves",
+                                       "adjudicate_after") if getattr(a, k, None) is not None}
     return ArenaSettings(size=a.size, komi=a.komi, max_illegal_per_game=a.max_illegal,
                          move_timeout_s=a.move_timeout, referee_visits=a.referee_visits,
                          review_visits=a.review_visits, rating_window=a.rating_window,
-                         allow_color_choice=not a.fixed_colors, tiers=load_tiers(a.tiers))
+                         allow_color_choice=not a.fixed_colors, tiers=load_tiers(a.tiers), **adj)
 
 
 def cmd_serve(a):
@@ -59,6 +61,10 @@ def cmd_serve(a):
     httpd = serve(arena, a.host, a.port, admin, a.viewer_token or os.environ.get("GOARENA_VIEWER_TOKEN", ""), web)
     print(f"goarena listening on http://{a.host}:{a.port}  (db={a.db}, katago={'on' if kg else 'off'}, "
           f"tiers={','.join(arena.opponents)})", flush=True)
+    st = arena.s
+    print("adjudication: " + (f"on (agent winrate < {st.adjudicate_winrate:g} and lead < -{st.adjudicate_lead:g} "
+                              f"on {st.adjudicate_moves} consecutive opponent moves after ply {st.adjudicate_after})"
+                              if st.adjudication_on else "off"), flush=True)
     if not (a.admin_token or os.environ.get("GOARENA_ADMIN_TOKEN")):
         print(f"admin token: {admin}", flush=True)
 
@@ -162,7 +168,7 @@ def cmd_review(a):
         print(gid, arena.review_game(gid), flush=True)
 
 
-def main(argv=None):
+def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="goarena")
     sub = p.add_subparsers(dest="cmd", required=True)
 
@@ -183,6 +189,14 @@ def main(argv=None):
         sp.add_argument("--review-visits", type=int, default=64)
         sp.add_argument("--rating-window", type=int, default=50)
         sp.add_argument("--fixed-colors", action="store_true")
+        sp.add_argument("--adjudicate-winrate", type=float, default=0.0,
+                        help="adjudicate decided games: agent winrate threshold, e.g. 0.01 (default 0 = off)")
+        sp.add_argument("--adjudicate-lead", type=float, default=20.0,
+                        help="... and the agent's score lead must be below minus this many points (default 20)")
+        sp.add_argument("--adjudicate-moves", type=int, default=4,
+                        help="... on this many consecutive opponent moves (default 4)")
+        sp.add_argument("--adjudicate-after", type=int, default=30,
+                        help="... counting only opponent moves after this ply (default 30)")
     s.set_defaults(fn=cmd_serve)
 
     c = sub.add_parser("create-run")
@@ -225,8 +239,11 @@ def main(argv=None):
     r.add_argument("--rating-window", type=int, default=50)
     r.add_argument("--fixed-colors", action="store_true")
     r.set_defaults(fn=cmd_review)
+    return p
 
-    a = p.parse_args(argv)
+
+def main(argv=None):
+    a = build_parser().parse_args(argv)
     a.fn(a)
 
 

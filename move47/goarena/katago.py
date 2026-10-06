@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import itertools
 import json
+import logging
 import os
 import subprocess
 import threading
@@ -16,6 +17,8 @@ from dataclasses import dataclass
 from typing import Optional
 
 from .board import BLACK, Board, point_to_coord
+
+log = logging.getLogger("goarena.katago")
 
 
 @dataclass
@@ -75,6 +78,10 @@ class KataGo:
                 continue
             if msg.get("isDuringSearch"):
                 continue
+            if "warning" in msg and "error" not in msg:
+                # e.g. an ignored query field: informational, the real answer follows
+                log.warning("KataGo warning for %s: %s (%s)", qid, msg.get("warning"), msg.get("field"))
+                continue
             with self._lock:
                 if qid in self._pending:
                     bucket = self._pending[qid]
@@ -130,7 +137,8 @@ class KataGo:
         return [["B" if m.color == BLACK else "W", point_to_coord(m.point, board.size)] for m in board.moves]
 
     def analyze(self, board: Board, visits: int, *, policy: bool = False, ownership: bool = False,
-                analyze_turns: Optional[list[int]] = None, priority: int = 0) -> dict | dict[int, dict]:
+                analyze_turns: Optional[list[int]] = None, priority: int = 0,
+                override_settings: Optional[dict] = None) -> dict | dict[int, dict]:
         payload = {
             "moves": self._moves(board),
             "rules": "chinese",
@@ -142,6 +150,8 @@ class KataGo:
             "includeOwnership": ownership,
             "priority": priority,
         }
+        if override_settings:
+            payload["overrideSettings"] = dict(override_settings)
         if analyze_turns is not None:
             payload["analyzeTurns"] = analyze_turns
             return self.query(payload, expected=len(analyze_turns))

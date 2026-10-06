@@ -36,7 +36,7 @@ CREATE TABLE IF NOT EXISTS games (
     status TEXT NOT NULL DEFAULT 'active',      -- active | finished
     result TEXT,                               -- SGF RE, e.g. B+3.5, W+R
     winner TEXT,                               -- agent | opponent
-    end_reason TEXT,                           -- score | resign | move_cap | timeout | illegal_limit | abandoned
+    end_reason TEXT,                           -- score | resign | move_cap | timeout | illegal_limit | adjudicated | abandoned
     margin REAL,
     agent_score REAL,                          -- 1 win, 0 loss
     moves_count INTEGER NOT NULL DEFAULT 0,

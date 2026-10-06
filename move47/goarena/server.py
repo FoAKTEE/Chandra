@@ -19,6 +19,7 @@ from typing import Callable, Optional
 from urllib.parse import parse_qs, urlparse
 
 from .arena import Arena, ArenaError
+from .katago import KataGoError
 
 log = logging.getLogger("goarena.http")
 
@@ -28,7 +29,7 @@ def rules_text(arena: Arena, run: dict) -> str:
     cfg = run["config"]
     size, komi = cfg.get("size", s.size), cfg.get("komi", s.komi)
     cap = int(s.move_cap_factor * size * size)
-    return f"""ARENA RULES
+    text = f"""ARENA RULES
 - Board {size}x{size}. Chinese rules: area scoring (stones + surrounded empty points), komi {komi:g} for White.
 - Captures as usual. Suicide is illegal. Positional superko: you may not recreate any earlier board position (this covers ko).
 - Coordinates: columns {''.join('ABCDEFGHJKLMNOPQRST'[:size])} (no I), rows 1-{size} from the bottom; e.g. `goban play C3`. Also `pass` and `resign`.
@@ -39,6 +40,11 @@ def rules_text(arena: Arena, run: dict) -> str:
 - A game is capped at {cap} moves; then it is scored as it stands.
 - Opponents never learn: each game they play from scratch. You choose the opponent for each game.
 - The run consists of {run['target_games']} games. Your rating uses your last {s.rating_window} games against rated opponents."""
+    if s.adjudication_on:
+        text += (f"\n- Adjudication: after move {s.adjudicate_after}, if the opponent's own analysis gives you less than "
+                 f"{s.adjudicate_winrate * 100:g}% winning chances and a deficit of more than {s.adjudicate_lead:g} points "
+                 f"on {s.adjudicate_moves} consecutive opponent moves, the game ends as your loss (reason: adjudicated).")
+    return text
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -133,6 +139,11 @@ class Handler(BaseHTTPRequestHandler):
             raise ArenaError("not_found", f"no route for {method} {path}", 404)
         except ArenaError as e:
             self._err(e.status, e.code, e.message)
+        except KataGoError as e:  # engine/GPU service unavailable: the game state in the DB is consistent
+            log.error("engine error on %s %s: %s", method, path, e)
+            self._err(503, "engine_unavailable", "The opponent engine is temporarily unavailable, so the "
+                      "opponent's reply is delayed. Wait a minute, then run `goban board` to see the current "
+                      "position before you move again.")
         except Exception as e:  # pragma: no cover
             log.error("handler error: %s\n%s", e, traceback.format_exc())
             self._err(500, "internal", str(e))

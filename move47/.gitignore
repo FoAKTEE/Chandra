@@ -12,3 +12,5 @@ logs/
 __pycache__/
 # Merged from go-bench v0.02 .gitignore (its other entries are already listed above).
 *.log
+# kgservice rendezvous files (contain per-backend secrets).
+engines/run/

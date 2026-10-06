@@ -1,0 +1,5 @@
+#!/bin/sh
+# KataGo-compatible client for the kgservice GPU backends: KATAGO_BIN=move47/bin/kg-client.
+# Speaks the KataGo analysis protocol on stdio; see kgservice/client.py.
+root=$(dirname "$(dirname "$(readlink -f "$0")")")
+PYTHONPATH="$root${PYTHONPATH:+:$PYTHONPATH}" exec python3 -m kgservice client "$@"

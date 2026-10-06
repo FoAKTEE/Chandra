@@ -255,14 +255,38 @@ def _json_from_text(text: str) -> Optional[dict]:
 
 
 # ------------------------------------------------------------------ CLI agents
+# Every Claude Code worker session starts clean (checked on Claude Code 2.1.290 against the
+# stream-json system/init event; README "Worker sessions and sandbox"):
+CLAUDE_CLEAN_FLAGS = (
+    "--setting-sources", "",             # no user/project/local settings: hooks, enabled plugins, model and effort defaults
+    "--strict-mcp-config",               # no MCP servers: user, project, plugin, claude.ai connectors
+    "--tools", "Bash,Read,Write,Edit",   # built-in tools limited to what the job protocol needs (no web, agents, cron)
+    "--disallowed-tools", "WebFetch,WebSearch",
+    "--disable-slash-commands",          # no skills: user, plugin, bundled
+    "--no-session-persistence",          # no transcript under ~/.claude/projects (session.jsonl keeps the stream)
+    "--settings", '{"autoMemoryEnabled": false}',   # no auto-memory read or written
+)
+# Variables a worker must not inherit: arena / engine secrets; for clean claude sessions also the parent
+# Claude Code session's own variables when gotree runs inside one (messaging-socket token, effort, nesting
+# markers), the KataGo service's and Slurm's.
+_SECRET_ENV = ("GOARENA_TOKEN", "GOARENA_ADMIN_TOKEN", "KATAGO_BIN", "KATAGO_MODEL")
+_DROP_ENV = ("CLAUDECODE", "CLAUDE_EFFORT", "CLAUDE_PID", "CLAUDE_PLUGIN_DATA", "AI_AGENT")
+_DROP_ENV_PREFIXES = ("CLAUDE_CODE_", "CODEX_COMPANION_", "KGSERVICE_", "SLURM_")
+
+
 class CLIWorker(Worker):
     """One fresh Claude Code / Codex session per job, run inside a job directory
-    that contains JOB.md, job.json and the `gtree` tool on PATH."""
+    that contains JOB.md, job.json and the `gtree` tool on PATH.
+
+    clean=True (default) adds CLAUDE_CLEAN_FLAGS to claude sessions and strips the parent
+    session's variables from their environment; codex sessions are unaffected."""
 
     def __init__(self, agent: str, model: str, run_dir: Path, dag_path: str, mem_path: str, *, effort: str = "",
-                 timeout: float = 1800, binary: str = "", wrap: str = "", extra: Optional[list[str]] = None):
+                 timeout: float = 1800, binary: str = "", wrap: str = "", extra: Optional[list[str]] = None,
+                 clean: bool = True):
         assert agent in ("claude", "codex")
         self.agent, self.model, self.effort = agent, model, effort
+        self.clean = clean
         self.run_dir = Path(run_dir)
         self.dag_path, self.mem_path = dag_path, mem_path
         self.timeout, self.wrap, self.extra = timeout, wrap, extra or []
@@ -282,6 +306,8 @@ class CLIWorker(Worker):
                 cmd += ["--model", self.model]
             if self.effort:
                 cmd += ["--effort", self.effort]
+            if self.clean:
+                cmd += list(CLAUDE_CLEAN_FLAGS)
         else:
             cmd = [self.binary, "exec", "--json", "--dangerously-bypass-approvals-and-sandbox",
                    "--skip-git-repo-check", "-C", str(jd)]
@@ -310,8 +336,13 @@ class CLIWorker(Worker):
         env = dict(os.environ, GTREE_JOB=str(jd), GTREE_DAG=self.dag_path, GTREE_MEM=self.mem_path,
                    PATH=f"{self.run_dir / 'bin'}{os.pathsep}{os.environ.get('PATH', '')}",
                    PYTHONPATH=f"{REPO}{os.pathsep}{os.environ.get('PYTHONPATH', '')}")
-        for k in ("GOARENA_TOKEN", "GOARENA_ADMIN_TOKEN", "KATAGO_BIN", "KATAGO_MODEL"):
+        for k in _SECRET_ENV:
             env.pop(k, None)
+        if self.agent == "claude" and self.clean:
+            for k in list(env):
+                if k in _DROP_ENV or k.startswith(_DROP_ENV_PREFIXES):
+                    del env[k]
+            env.update(CLAUDE_CODE_DISABLE_AUTO_MEMORY="1", CLAUDE_CODE_DISABLE_CLAUDE_MDS="1")
         try:
             with open(jd / "session.jsonl", "w") as fo, open(jd / "session.err", "w") as fe:
                 rc = subprocess.run(self.command(prompt, jd), cwd=jd, env=env, stdout=fo, stderr=fe,
@@ -342,7 +373,7 @@ class CLIWorker(Worker):
 
 def _cli_usage(path: Path) -> dict:
     """Best-effort token accounting from Claude Code stream-json / Codex JSONL."""
-    u = {"input": 0, "output": 0, "cache_read": 0, "cost_usd": 0.0}
+    u = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "cost_usd": 0.0}
     try:
         for line in path.read_text(errors="ignore").splitlines():
             try:
@@ -354,6 +385,7 @@ def _cli_usage(path: Path) -> dict:
                 u["input"] += int(us.get("input_tokens", 0) or 0)
                 u["output"] += int(us.get("output_tokens", 0) or 0)
                 u["cache_read"] += int(us.get("cache_read_input_tokens", 0) or 0)
+                u["cache_write"] += int(us.get("cache_creation_input_tokens", 0) or 0)
                 u["cost_usd"] += float(d.get("total_cost_usd", 0) or 0)
             elif d.get("type") == "turn.completed":  # Codex
                 us = d.get("usage") or {}
@@ -366,7 +398,8 @@ def _cli_usage(path: Path) -> dict:
 
 
 def make_worker(spec: str, *, run_dir: Path, dag_path: str, mem_path: str, memory=None, seed: int = 0,
-                timeout: float = 1800, wrap: str = "") -> Worker:
+                timeout: float = 1800, wrap: str = "", clean: bool = True,
+                claude_args: Optional[list[str]] = None) -> Worker:
     """spec examples: mock | api:anthropic:claude-opus-5-5:high | api:openai:gpt-6.1-sol |
     claude:opus:high | codex:gpt-6.1-sol:high"""
     parts = spec.split(":")
@@ -381,5 +414,6 @@ def make_worker(spec: str, *, run_dir: Path, dag_path: str, mem_path: str, memor
     if kind in ("claude", "codex"):
         model = parts[1] if len(parts) > 1 else ""
         effort = parts[2] if len(parts) > 2 else ""
-        return CLIWorker(kind, model, run_dir, dag_path, mem_path, effort=effort, timeout=timeout, wrap=wrap)
+        return CLIWorker(kind, model, run_dir, dag_path, mem_path, effort=effort, timeout=timeout, wrap=wrap,
+                         clean=clean, extra=list(claude_args or []) if kind == "claude" else None)
     raise ValueError(f"unknown worker spec {spec}")

@@ -1,0 +1,196 @@
+#!/usr/bin/env python3
+"""worker-sandbox: run one gotree worker session (or any command) under bubblewrap.
+
+  worker-sandbox [--print] [--workspace DIR] [--keep-env NAME]... JOBDIR COMMAND [ARG...]
+
+gotree passes it as a prefix:  --wrap '<move47>/bin/worker-sandbox {jobdir}'
+
+Design: bind the host root read-only, mask, then re-expose only what a worker needs.
+
+  masked (empty tmpfs)  the Move47 workspace (parent of Chandra: Chandra with its git history and
+                        ledgers, move47/{engines,judge,logs,gtp_logs}, both ref-code mirrors,
+                        progress/, every run dir including the arena), $HOME, /tmp, /var/tmp,
+                        /run/user/<uid>, /run/munge, /opt/slurm, /etc/slurm, $KGSERVICE_RUN_DIR
+  masked (/dev/null)    every Slurm client found on PATH outside those (srun, sbatch, salloc, ...);
+                        with /opt/slurm, /etc/slurm and the munge socket gone, submission fails
+  re-exposed, ro        move47/gotree (minus probe.py, judge.py, __pycache__), the run's bin/
+                        (gtree launcher), $GTREE_DAG and $GTREE_MEM with their -wal files,
+                        ~/.local/bin and ~/.local/share/claude (the claude binary)
+  re-exposed, rw        JOBDIR, the -shm files of the two databases (SQLite WAL readers write
+                        their read marks there), ~/.claude (OAuth credentials, refreshed in place)
+                        with every other entry in it masked by an empty tmpfs or empty file (host
+                        transcripts, auto-memory, history, settings, plugins, skills, daemon, ...)
+  private copy          ~/.claude.json without its per-project section (claude rewrites it)
+  namespaces            new pid namespace with its own /proc, new ipc; network is shared
+                        (the model API needs it)
+  environment           cleared; an allowlist is passed through, plus switches that turn off
+                        auto-memory, CLAUDE.md discovery and the auto-updater
+
+It refuses to start when JOBDIR or a database lies inside a protected directory.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shutil
+import sys
+from pathlib import Path
+
+MOVE47 = Path(__file__).resolve().parent.parent
+CHANDRA = MOVE47.parent
+HOME = Path(os.path.expanduser("~"))
+UID = os.getuid()
+
+SLURM_TOOLS = ("srun", "sbatch", "salloc", "sattach", "sbcast", "scancel", "scontrol", "scrontab", "scrun",
+               "sinfo", "squeue", "sacct", "sacctmgr", "sreport", "sshare", "sstat", "strigger", "sprio",
+               "sdiag", "swait", "sh5util")
+ENV_KEEP = ("HOME", "USER", "LOGNAME", "PATH", "LANG", "LANGUAGE", "LC_ALL", "LC_CTYPE", "LC_MESSAGES", "TZ",
+            "TERM", "PYTHONPATH", "GTREE_JOB", "GTREE_DAG", "GTREE_MEM",
+            "http_proxy", "https_proxy", "no_proxy", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY",
+            "SSL_CERT_FILE", "SSL_CERT_DIR", "NODE_EXTRA_CA_CERTS", "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL")
+ENV_SET = {"SHELL": "/bin/bash", "TMPDIR": "/tmp", "PYTHONDONTWRITEBYTECODE": "1",
+           "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1", "CLAUDE_CODE_DISABLE_CLAUDE_MDS": "1",
+           "DISABLE_AUTOUPDATER": "1"}
+CLAUDE_DIR_KEEP = {".credentials.json"}       # everything else in ~/.claude is masked
+CLAUDE_JSON_DROP = ("projects", "githubRepoPaths")
+
+
+def protected(workspace: Path) -> list[Path]:
+    """Directories whose contents must never be visible inside the sandbox."""
+    out = [MOVE47 / "engines", MOVE47 / "judge", MOVE47 / "logs", MOVE47 / "gtp_logs", CHANDRA / "ref-code",
+           workspace / "ref-code", workspace / "progress", workspace / "runs" / "move47" / "arena"]
+    if os.environ.get("KGSERVICE_RUN_DIR"):
+        out.append(Path(os.environ["KGSERVICE_RUN_DIR"]))
+    return [Path(os.path.realpath(p)) for p in out]
+
+
+def inside(p: Path, roots: list[Path]) -> bool:
+    p = Path(os.path.realpath(p))
+    return any(p == r or r in p.parents for r in roots)
+
+
+def build(jobdir: Path, cmd: list[str], workspace: Path, keep_env: list[str]) -> tuple[list[str], list[int]]:
+    """Return (bwrap argv, file descriptors bwrap must inherit)."""
+    jobdir = Path(os.path.realpath(jobdir))
+    if not jobdir.is_dir():
+        raise SystemExit(f"worker-sandbox: job directory {jobdir} does not exist")
+    if len(workspace.parts) < 3 or workspace in (HOME, HOME.parent):
+        raise SystemExit(f"worker-sandbox: refusing to mask {workspace} as the workspace")
+    prot = protected(workspace)
+    dbs = [Path(os.path.realpath(os.environ[k])) for k in ("GTREE_DAG", "GTREE_MEM") if os.environ.get(k)]
+    for p in [jobdir, *dbs]:
+        if inside(p, prot):
+            raise SystemExit(f"worker-sandbox: {p} lies inside a protected directory")
+
+    a = ["bwrap", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc",
+         "--unshare-pid", "--unshare-ipc", "--unshare-cgroup-try", "--die-with-parent", "--new-session"]
+    fds: list[int] = []
+
+    def tmpfs(p) -> None:
+        if os.path.lexists(p):
+            a.extend(["--tmpfs", str(p)])
+
+    def null(p) -> None:
+        a.extend(["--ro-bind", "/dev/null", str(p)])
+
+    def memfd(content: bytes) -> int:
+        fd = os.memfd_create("worker-sandbox", 0)
+        os.write(fd, content)
+        os.lseek(fd, 0, os.SEEK_SET)
+        os.set_inheritable(fd, True)
+        fds.append(fd)
+        return fd
+
+    def blank(p) -> None:   # an empty regular file ("{}" for JSON) in place of p
+        a.extend(["--ro-bind-data", str(memfd(b"{}" if str(p).endswith(".json") else b"")), str(p)])
+
+    # ---- masks
+    masked = [Path(p) for p in (workspace, HOME, "/tmp", "/var/tmp", f"/run/user/{UID}", "/run/munge",
+                                "/opt/slurm", "/etc/slurm") if os.path.isdir(p) and not os.path.islink(p)]
+    masked += [q for q in prot if q.is_dir() and not inside(q, masked)]
+    for p in masked:
+        tmpfs(p)
+    for t in SLURM_TOOLS:   # Slurm clients installed outside the masked directories
+        w = shutil.which(t)
+        if w and os.path.exists(w) and not inside(Path(w), masked):
+            null(os.path.realpath(w))
+
+    # ---- home: the claude binary (ro) and ~/.claude (rw, host state masked)
+    for p in [HOME / ".local/bin", HOME / ".local/share/claude"]:
+        if p.exists():
+            a.extend(["--ro-bind", str(p), str(p)])
+    cdir = HOME / ".claude"
+    if cdir.is_dir():
+        a.extend(["--bind", str(cdir), str(cdir)])
+        for e in sorted(os.listdir(cdir)):
+            p = cdir / e
+            if e in CLAUDE_DIR_KEEP or e.endswith(".lock"):
+                continue
+            if p.is_dir() and not p.is_symlink():
+                a.extend(["--tmpfs", str(p)])
+            else:
+                blank(p)
+    cj = HOME / ".claude.json"
+    if cj.is_file():
+        try:
+            conf = json.loads(cj.read_text())
+        except (OSError, json.JSONDecodeError):
+            conf = {}
+        for k in CLAUDE_JSON_DROP:
+            conf.pop(k, None)
+        a.extend(["--perms", "0600", "--file", str(memfd(json.dumps(conf).encode())), str(cj)])
+
+    # ---- workspace: the gtree code, the run's tool dir, the databases, the job dir
+    gotree = MOVE47 / "gotree"
+    a.extend(["--ro-bind", str(gotree), str(gotree)])
+    for f in ("probe.py", "judge.py"):
+        if (gotree / f).exists():
+            null(gotree / f)
+    a.extend(["--tmpfs", str(gotree / "__pycache__")])
+    run = jobdir.parent.parent if jobdir.parent.name == "jobs" else None
+    if run is not None and (run / "bin").is_dir() and not inside(run / "bin", prot):
+        a.extend(["--ro-bind", str(run / "bin"), str(run / "bin")])
+    for db in dbs:
+        if db.exists():
+            a.extend(["--ro-bind", str(db), str(db),
+                      "--ro-bind-try", f"{db}-wal", f"{db}-wal",
+                      "--bind-try", f"{db}-shm", f"{db}-shm"])
+    a.extend(["--bind", str(jobdir), str(jobdir), "--chdir", str(jobdir)])
+
+    # ---- environment
+    a.append("--clearenv")
+    for k in (*ENV_KEEP, *keep_env):
+        if k in os.environ:
+            a.extend(["--setenv", k, os.environ[k]])
+    for k, v in ENV_SET.items():
+        a.extend(["--setenv", k, v])
+    return a + ["--", *cmd], fds
+
+
+def main(argv=None) -> int:
+    p = argparse.ArgumentParser(prog="worker-sandbox", description=__doc__,
+                                formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--print", action="store_true", help="print the bwrap command line as JSON and exit")
+    p.add_argument("--workspace", default=str(CHANDRA.parent),
+                   help="directory masked as a whole (default: the parent of the Chandra checkout)")
+    p.add_argument("--keep-env", action="append", default=[], metavar="NAME",
+                   help="also pass this environment variable through")
+    p.add_argument("jobdir")
+    p.add_argument("cmd", nargs=argparse.REMAINDER)
+    a = p.parse_args(argv)
+    if not a.cmd:
+        p.error("no command given")
+    argv2, fds = build(Path(a.jobdir), a.cmd, Path(os.path.realpath(a.workspace)), a.keep_env)
+    if a.print:
+        print(json.dumps(argv2, indent=1))
+        return 0
+    if shutil.which("bwrap") is None:
+        print("worker-sandbox: bwrap not found", file=sys.stderr)
+        return 127
+    os.execvp("bwrap", argv2)
+    return 127  # pragma: no cover
+
+
+if __name__ == "__main__":
+    sys.exit(main())

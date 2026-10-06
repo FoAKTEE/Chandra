@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
 import sys
 import time
 from pathlib import Path
@@ -37,7 +38,13 @@ def _common(p: argparse.ArgumentParser) -> None:
     p.add_argument("--workers", type=int, default=8)
     p.add_argument("--time-limit", type=float, default=0)
     p.add_argument("--job-timeout", type=float, default=1800)
-    p.add_argument("--wrap", default="", help="prefix for CLI workers, e.g. a sandbox; {jobdir} is substituted")
+    p.add_argument("--wrap", default="", help="prefix for CLI workers, e.g. a sandbox; {jobdir} is substituted "
+                                              "(bin/worker-sandbox {jobdir})")
+    p.add_argument("--no-claude-clean", dest="claude_clean", action="store_false",
+                   help="start claude workers with the host's settings, hooks, plugins, MCP servers and skills "
+                        "(default: clean sessions, see gotree.workers.CLAUDE_CLEAN_FLAGS)")
+    p.add_argument("--claude-args", default="", metavar="ARGS",
+                   help="extra arguments appended to every claude worker command, e.g. '--max-budget-usd 5'")
     p.add_argument("--set", action="append", default=[], metavar="KEY=VALUE", help="override a SearchConfig field")
     p.add_argument("--seed", type=int, default=0)
 
@@ -58,7 +65,8 @@ def _build(a) -> tuple[Search, Path]:
 
     def mk(spec: str):
         return make_worker(spec, run_dir=run, dag_path=dag_path, mem_path=mem_path, memory=mem, seed=a.seed,
-                           timeout=a.job_timeout, wrap=a.wrap)
+                           timeout=a.job_timeout, wrap=a.wrap, clean=a.claude_clean,
+                           claude_args=shlex.split(a.claude_args))
 
     workers = {"default": mk(a.worker)}
     for kv in a.worker_for:

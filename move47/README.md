@@ -47,3 +47,50 @@ python3 -m kgservice stop                        # scancel every kgservice job
 
 Tests: `python3 -m pytest -q tests/test_kgservice.py -p no:cacheprovider` (fake engine
 `tests/fake_katago.py`, no GPU). GPU smoke across a forced backend kill: `scripts/kg_smoke.py`.
+
+## Worker sessions and sandbox
+
+Every tree-search job is a fresh `claude -p` session (`gotree.workers.CLIWorker`). Two layers keep it
+clean and unable to see engine or judge output.
+
+**Clean flags** (default for `claude:` workers; `--no-claude-clean` turns them off, `--claude-args '...'`
+appends more, e.g. `--max-budget-usd 5`). Measured on Claude Code 2.1.290 from the stream-json
+`system/init` event and a captured request body:
+
+| flag | removes |
+|---|---|
+| `--setting-sources ""` | user/project/local settings: hooks (atuin, codex plugin), enabled plugins (github, codex), CLAUDE.md, model/effort defaults |
+| `--strict-mcp-config` | MCP servers: plugin servers and claude.ai connectors |
+| `--tools Bash,Read,Write,Edit` + `--disallowed-tools WebFetch,WebSearch` | every other built-in tool (web, Task/agents, cron, worktrees, notebook, ...) |
+| `--disable-slash-commands` | skills (user, plugin, bundled) |
+| `--no-session-persistence` | the transcript under `~/.claude/projects` (the job's `session.jsonl` keeps the stream) |
+| `--settings '{"autoMemoryEnabled": false}'` | auto-memory (the host's Move47 project memory was injected otherwise) |
+
+The model and effort come only from the worker spec: `claude:claude-opus-5-5:xhigh` sends
+`"model": "claude-opus-5-5"` and `"output_config": {"effort": "xhigh"}`. A clean session also drops the
+parent session's variables (`CLAUDECODE`, `CLAUDE_CODE_*` including the messaging-socket token,
+`CLAUDE_EFFORT`, `SLURM_*`, `KGSERVICE_*`).
+
+**Sandbox** `bin/worker-sandbox` (bubblewrap), passed as gotree's `--wrap`:
+
+```bash
+python3 -m gotree search --sgf pos.sgf --run /data/haiyangw/claude/Move47/runs/move47/<run> \
+    --worker claude:claude-opus-5-5:xhigh --wrap "$PWD/bin/worker-sandbox {jobdir}" --job-timeout 900
+```
+
+The host root is bound read-only; the whole Move47 workspace (Chandra with its git history and ledgers,
+`engines/` incl. `engines/run` rendezvous files, `judge/`, `logs/`, `gtp_logs/`, both `ref-code/`
+mirrors, `progress/`, every run dir incl. the arena), `$HOME`, `/tmp`, `/run/user/<uid>`, the munge
+socket, `/opt/slurm` and `/etc/slurm` are masked by empty tmpfs mounts; `srun`/`sbatch`/`salloc` are not
+found. Re-exposed: `move47/gotree` read-only (without `probe.py`, `judge.py`), the run's `bin/gtree`,
+`dag.db`/`memory.db` read-only with their `-wal` (read-only) and `-shm` (writable: WAL readers keep
+their read marks there), the job dir read-write, `~/.claude` read-write for the OAuth credentials with
+every other entry in it masked (host transcripts, auto-memory, history, settings, plugins, skills,
+daemon), and a private copy of `~/.claude.json` without its per-project section. The session runs in
+its own pid namespace with a cleared environment. `worker-sandbox --print JOBDIR CMD` shows the bwrap
+command line. The network is shared (the model API needs it), so services on 127.0.0.1 stay reachable
+and must authenticate: the KataGo backend token lives in the masked rendezvous dir; run the arena with
+`--viewer-token`.
+
+Tests (no model): `python3 -m pytest -q tests/test_worker_sandbox.py -p no:cacheprovider` (canary with
+plain commands, the fake agent through the sandbox, command construction).

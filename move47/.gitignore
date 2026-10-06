@@ -1,0 +1,12 @@
+# Engine binaries, downloaded networks, run outputs and logs are never tracked.
+engines/katago
+engines/dist/
+engines/models/
+runs/
+judge/
+logs/
+.build/
+*.db
+*.db-wal
+*.db-shm
+__pycache__/

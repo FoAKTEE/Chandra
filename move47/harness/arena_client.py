@@ -51,8 +51,10 @@ class ArenaClient:
     def new_game(self, opponent: str, color: Optional[str] = None):
         return self._req("POST", "/api/agent/new", {"opponent": opponent, "color": color})
 
-    def play(self, move: str):
-        return self._req("POST", "/api/agent/play", {"move": move})
+    def play(self, move: str, retries: int = 5):
+        """retries=1: a transport failure raises at once instead of resending the move (the first
+        request may have been played; gotree.play then fetches the board)."""
+        return self._req("POST", "/api/agent/play", {"move": move}, retries=retries)
 
     def resign(self):
         return self._req("POST", "/api/agent/resign", {})

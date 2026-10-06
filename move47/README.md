@@ -2,6 +2,7 @@
 
 Mission brief: `progress/prompt/init.md` in the Move47 workspace. Design source:
 `ref-code/v0.02` (go-bench: goarena + gotree; see its `PROMPT.md` and `TREE.md`).
+go-bench is imported here (origin, hashes, deviations: `PROVENANCE.md`); its docs: `docs/GO-BENCH.md` (README), `TREE.md`, `DESIGN.md`.
 
 ## KataGo on GPU
 

@@ -1,0 +1,13 @@
+{
+  "_comment": "19x19 ladder. NOT calibrated yet: run `python -m goarena calibrate --size 19 --tiers config/tiers-19x19.json --write config/tiers-19x19.json` on the target hardware (GPU recommended). Same epsilon-greedy construction as the 9x9 ladder.",
+  "tiers": {
+    "random": {"label": "Random", "kind": "random", "elo": 0, "elo_se": 0, "description": "uniform random legal move (never fills its own eyes)"},
+    "greedy": {"label": "Greedy", "kind": "greedy", "elo": 0, "description": "one-ply tactics, no search"},
+    "lv2": {"label": "KataGo level 2", "kind": "katago", "visits": 1, "temperature": 1.0, "random_prob": 0.5, "elo": 0, "description": "KataGo policy, 50% of moves random"},
+    "lv4": {"label": "KataGo level 4", "kind": "katago", "visits": 1, "temperature": 0.8, "random_prob": 0.2, "elo": 0, "description": "KataGo policy, 20% of moves random"},
+    "lv6": {"label": "KataGo level 6", "kind": "katago", "visits": 1, "temperature": 0.5, "random_prob": 0.04, "elo": 0, "description": "KataGo policy, 4% of moves random"},
+    "lv7": {"label": "KataGo level 7", "kind": "katago", "visits": 1, "temperature": 0.2, "elo": 0, "description": "KataGo raw policy, no search"},
+    "lv8": {"label": "KataGo level 8", "kind": "katago", "visits": 32, "elo": 0, "description": "KataGo, 32 visits"},
+    "max": {"label": "KataGo max", "kind": "katago", "visits": 1600, "elo": 0, "counts_for_rating": false, "description": "KataGo, 1600 visits; not rated"}
+  }
+}

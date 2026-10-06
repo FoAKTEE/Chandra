@@ -1,0 +1,114 @@
+{
+  "_comment": "Opponent ladder for 9x9, Chinese rules, komi 7.5. 'elo' values were measured with `python -m goarena calibrate --games 12 --span 2` (anchor random = 0, Bradley-Terry fit); 'elo_se' is the standard error. KataGo levels mix uniformly random moves into KataGo's raw policy (no search) so their strength does not depend on hardware; lv8/max use a fixed visit count. 'max' was not calibrated and is unrated. Network: g170e-b10c128 (bundled with the KataGo repo). Re-calibrate if you change the network.",
+  "tiers": {
+    "random": {
+      "label": "Random",
+      "kind": "random",
+      "elo": 0,
+      "description": "uniform random legal move (never fills its own eyes)",
+      "elo_se": 0
+    },
+    "lv1": {
+      "label": "KataGo level 1",
+      "kind": "katago",
+      "visits": 1,
+      "temperature": 1.0,
+      "random_prob": 0.7,
+      "elo": 409,
+      "description": "KataGo policy, 70% of moves random",
+      "elo_se": 72
+    },
+    "lv2": {
+      "label": "KataGo level 2",
+      "kind": "katago",
+      "visits": 1,
+      "temperature": 1.0,
+      "random_prob": 0.5,
+      "elo": 592,
+      "description": "KataGo policy, 50% of moves random",
+      "elo_se": 64
+    },
+    "greedy": {
+      "label": "Greedy",
+      "kind": "greedy",
+      "elo": 668,
+      "description": "one-ply tactics: capture, escape atari, avoid self-atari; no search",
+      "elo_se": 78
+    },
+    "lv3": {
+      "label": "KataGo level 3",
+      "kind": "katago",
+      "visits": 1,
+      "temperature": 1.0,
+      "random_prob": 0.35,
+      "elo": 865,
+      "description": "KataGo policy, 35% of moves random",
+      "elo_se": 77
+    },
+    "lv4": {
+      "label": "KataGo level 4",
+      "kind": "katago",
+      "visits": 1,
+      "temperature": 0.8,
+      "random_prob": 0.2,
+      "elo": 1173,
+      "description": "KataGo policy, 20% of moves random",
+      "elo_se": 70
+    },
+    "lv5": {
+      "label": "KataGo level 5",
+      "kind": "katago",
+      "visits": 1,
+      "temperature": 0.6,
+      "random_prob": 0.1,
+      "elo": 1259,
+      "description": "KataGo policy, 10% of moves random",
+      "elo_se": 70
+    },
+    "lv6": {
+      "label": "KataGo level 6",
+      "kind": "katago",
+      "visits": 1,
+      "temperature": 0.5,
+      "random_prob": 0.04,
+      "elo": 1506,
+      "description": "KataGo policy, 4% of moves random",
+      "elo_se": 77
+    },
+    "lv7": {
+      "label": "KataGo level 7",
+      "kind": "katago",
+      "visits": 1,
+      "temperature": 0.2,
+      "random_prob": 0.0,
+      "elo": 1850,
+      "description": "KataGo raw policy, no search, no random moves",
+      "elo_se": 89
+    },
+    "lv8": {
+      "label": "KataGo level 8",
+      "kind": "katago",
+      "visits": 32,
+      "temperature": 0.0,
+      "elo": 2064,
+      "description": "KataGo with a small search (32 visits)",
+      "elo_se": 107
+    },
+    "max": {
+      "label": "KataGo max",
+      "kind": "katago",
+      "visits": 600,
+      "elo": 2300,
+      "counts_for_rating": false,
+      "description": "KataGo with a full search (600 visits); not counted in the rating"
+    }
+  },
+  "_calibration": {
+    "date": "2026-10-05",
+    "games_per_pair": 12,
+    "span": 2,
+    "size": 9,
+    "komi": 7.5,
+    "anchor": "random"
+  }
+}

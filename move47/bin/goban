@@ -1,0 +1,6 @@
+#!/usr/bin/env python3
+# Agent-facing CLI for the Go arena. Needs GOARENA_URL and GOARENA_TOKEN.
+import os, sys
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), ".."))
+from goarena.goban import main
+sys.exit(main())

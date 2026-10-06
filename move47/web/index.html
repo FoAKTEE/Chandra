@@ -1,0 +1,428 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>AI Learning Go</title>
+<style>
+:root {
+  color-scheme: light;
+  --page: #f9f9f7; --surface: #fcfcfb; --surface-2: #f2f1ee;
+  --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
+  --grid: #e1e0d9; --axis: #c3c2b7; --border: rgba(11,11,11,0.10);
+  --accent: #2a78d6; --good: #006300; --bad: #d03b3b;
+  --s1:#2a78d6; --s2:#eb6834; --s3:#1baf7a; --s4:#eda100; --s5:#e87ba4; --s6:#008300; --s7:#4a3aa7; --s8:#e34948;
+  --seq-0:#f0efec; --seq-1:#cde2fb; --seq-2:#9ec5f4; --seq-3:#6da7ec; --seq-4:#3987e5; --seq-5:#256abf; --seq-6:#184f95;
+  --wood:#dcb35c; --wood-line:#3b2a10;
+}
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) {
+    color-scheme: dark;
+    --page: #0d0d0d; --surface: #1a1a19; --surface-2: #232321;
+    --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
+    --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10);
+    --accent: #3987e5; --good: #0ca30c; --bad: #e66767;
+    --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500; --s5:#d55181; --s6:#008300; --s7:#9085e9; --s8:#e66767;
+    --seq-0:#2a2a28; --seq-1:#104281; --seq-2:#184f95; --seq-3:#1c5cab; --seq-4:#256abf; --seq-5:#2a78d6; --seq-6:#3987e5;
+    --wood:#c9a24f;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --page: #0d0d0d; --surface: #1a1a19; --surface-2: #232321;
+  --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
+  --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10);
+  --accent: #3987e5; --good: #0ca30c; --bad: #e66767;
+  --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500; --s5:#d55181; --s6:#008300; --s7:#9085e9; --s8:#e66767;
+  --seq-0:#2a2a28; --seq-1:#104281; --seq-2:#184f95; --seq-3:#1c5cab; --seq-4:#256abf; --seq-5:#2a78d6; --seq-6:#3987e5;
+  --wood:#c9a24f;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--page); color: var(--ink);
+  font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+header { display: flex; align-items: center; gap: 24px; padding: 14px 16px; border-bottom: 1px solid var(--border);
+  position: sticky; top: 0; background: var(--page); z-index: 5; flex-wrap: wrap; }
+header h1 { font-size: 16px; margin: 0; font-weight: 650; letter-spacing: .01em; }
+nav { display: flex; gap: 4px; }
+nav a { color: var(--ink-2); padding: 6px 10px; border-radius: 6px; }
+nav a.on { color: var(--ink); background: var(--surface-2); text-decoration: none; }
+header .sp { flex: 1; }
+header button { background: none; border: 1px solid var(--border); color: var(--ink-2); border-radius: 6px; padding: 4px 8px; cursor: pointer; }
+main { max-width: 1240px; margin: 0 auto; padding: 20px 16px 60px; }
+h2 { font-size: 15px; margin: 28px 0 10px; font-weight: 650; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 14px; }
+.muted { color: var(--muted); }
+.ink2 { color: var(--ink-2); }
+.tw { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--grid); white-space: nowrap; }
+th { color: var(--muted); font-weight: 500; font-size: 12px; }
+td.num, th.num { text-align: right; }
+tr.click { cursor: pointer; }
+tr.click:hover td { background: var(--surface-2); }
+.pill { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 99px; border: 1px solid var(--border); color: var(--ink-2); }
+.pill.live { color: var(--good); border-color: currentColor; }
+.sw { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
+.ladder { display: flex; gap: 2px; }
+.ladder span { width: 13px; height: 16px; border-radius: 3px; background: var(--seq-0); }
+.tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+.tile .v { font-size: 22px; font-weight: 600; }
+.tile .k { color: var(--muted); font-size: 12px; }
+.legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--ink-2); margin: 6px 0 4px; }
+.chart { position: relative; }
+.chart svg { display: block; width: 100%; height: auto; overflow: visible; }
+.tip { position: absolute; pointer-events: none; background: var(--surface); border: 1px solid var(--border);
+  border-radius: 8px; padding: 8px 10px; font-size: 12px; box-shadow: 0 4px 16px rgba(0,0,0,.18); display: none; z-index: 3; min-width: 140px; }
+.tip b { font-weight: 600; }
+.grid-live { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; }
+.replay { display: grid; grid-template-columns: minmax(280px, 520px) 1fr; gap: 18px; align-items: start; }
+@media (max-width: 820px) { .replay { grid-template-columns: 1fr; } }
+.controls { display: flex; gap: 6px; align-items: center; margin-top: 10px; flex-wrap: wrap; }
+.controls button { background: var(--surface-2); color: var(--ink); border: 1px solid var(--border); border-radius: 6px;
+  padding: 5px 10px; cursor: pointer; font: inherit; }
+.controls input[type=range] { flex: 1; min-width: 140px; }
+.moves { display: flex; flex-wrap: wrap; gap: 2px 4px; font-size: 12px; max-height: 220px; overflow: auto; font-variant-numeric: tabular-nums; }
+.moves span { padding: 1px 4px; border-radius: 4px; cursor: pointer; color: var(--ink-2); }
+.moves span.cur { background: var(--accent); color: #fff; }
+.moves span.bl { text-decoration: underline wavy var(--bad); }
+select { background: var(--surface); color: var(--ink); border: 1px solid var(--border); border-radius: 6px; padding: 5px 8px; font: inherit; }
+pre { background: var(--surface-2); padding: 10px; border-radius: 8px; overflow: auto; font-size: 12px; max-height: 240px; white-space: pre-wrap; word-break: break-all; }
+.replay > div { min-width: 0; }
+.st { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin: 0 2px 0 1px; vertical-align: -1px; border: 1px solid var(--muted); }
+.st.b { background: #141414; } .st.w { background: #f7f7f2; }
+.empty { padding: 30px; text-align: center; color: var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <h1>AI Learning Go</h1>
+  <nav><a href="#/" data-r="">Overview</a><a href="#/live" data-r="live">Live</a><a href="#/games" data-r="games">Games</a></nav>
+  <div class="sp"></div>
+  <button id="theme" title="Toggle theme">◐</button>
+</header>
+<main id="app"><div class="empty">Loading…</div></main>
+<script>
+"use strict";
+const $ = (s, el = document) => el.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const KEY = new URLSearchParams(location.search).get("key");
+async function api(path) {
+  const r = await fetch(path + (KEY ? (path.includes("?") ? "&" : "?") + "key=" + encodeURIComponent(KEY) : ""));
+  const ct = r.headers.get("content-type") || "";
+  return ct.includes("json") ? r.json() : r.text();
+}
+const COLS = "ABCDEFGHJKLMNOPQRST";
+const SERIES = n => `var(--s${(n % 8) + 1})`;
+const fmtTime = s => { if (s == null) return "–"; s = Math.round(s); const d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60);
+  return d ? `${d}d ${h}h ${m}m` : h ? `${h}h ${m}m` : `${m}m ${s % 60}s`; };
+const pct = v => v == null ? "–" : Math.round(v * 100) + "%";
+const fixed = (v, d = 0) => v == null ? "–" : Number(v).toLocaleString(undefined, {maximumFractionDigits: d, minimumFractionDigits: d});
+let timer = null;
+function stopTimer() { if (timer) clearInterval(timer); timer = null; }
+
+// theme toggle (per-viewer convenience only)
+(function () {
+  let t = null; try { t = localStorage.getItem("theme"); } catch (e) {}
+  if (t) document.documentElement.dataset.theme = t;
+  $("#theme").onclick = () => {
+    const dark = matchMedia("(prefers-color-scheme: dark)").matches;
+    const cur = document.documentElement.dataset.theme || (dark ? "dark" : "light");
+    const nxt = cur === "dark" ? "light" : "dark";
+    document.documentElement.dataset.theme = nxt;
+    try { localStorage.setItem("theme", nxt); } catch (e) {}
+  };
+})();
+
+// ---------------------------------------------------------------- board
+function boardSVG(rows, opts = {}) {
+  const n = rows.length, cell = 40, pad = 40, W = pad * 2 + cell * (n - 1);
+  const xy = i => pad + i * cell;
+  let s = `<svg viewBox="0 0 ${W} ${W}" role="img" aria-label="Go board"><rect width="${W}" height="${W}" rx="8" fill="var(--wood)"/>`;
+  for (let i = 0; i < n; i++) {
+    s += `<line x1="${xy(0)}" y1="${xy(i)}" x2="${xy(n - 1)}" y2="${xy(i)}" stroke="var(--wood-line)" stroke-width="1.2" opacity=".85"/>`;
+    s += `<line x1="${xy(i)}" y1="${xy(0)}" x2="${xy(i)}" y2="${xy(n - 1)}" stroke="var(--wood-line)" stroke-width="1.2" opacity=".85"/>`;
+    s += `<text x="${xy(i)}" y="${pad - 25}" font-size="12" text-anchor="middle" fill="var(--wood-line)" opacity=".8">${COLS[i]}</text>`;
+    s += `<text x="${pad - 28}" y="${xy(i) + 4}" font-size="12" text-anchor="middle" fill="var(--wood-line)" opacity=".8">${n - i}</text>`;
+  }
+  const e = n < 13 ? 2 : 3, stars = n % 2 ? [e, (n - 1) / 2, n - 1 - e] : [e, n - 1 - e];
+  for (const a of stars) for (const b of stars) {
+    if (n < 13 && (a === (n - 1) / 2) !== (b === (n - 1) / 2)) continue;
+    s += `<circle cx="${xy(a)}" cy="${xy(b)}" r="3.5" fill="var(--wood-line)"/>`;
+  }
+  for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) {
+    const c = rows[y][x];
+    if (c !== "X" && c !== "O") continue;
+    const black = c === "X";
+    s += `<circle cx="${xy(x)}" cy="${xy(y)}" r="${cell * .47}" fill="${black ? "#141414" : "#f7f7f2"}" stroke="${black ? "#000" : "#6b6b62"}" stroke-width="1"/>`;
+  }
+  if (opts.last) {
+    const [x, y] = opts.last;
+    const c = rows[y][x] === "X" ? "#f7f7f2" : "#141414";
+    s += `<circle cx="${xy(x)}" cy="${xy(y)}" r="${cell * .18}" fill="none" stroke="${c}" stroke-width="2.5"/>`;
+  }
+  return s + "</svg>";
+}
+function coordXY(c, n) {
+  if (!c || c.toLowerCase() === "pass") return null;
+  return [COLS.indexOf(c[0].toUpperCase()), n - parseInt(c.slice(1), 10)];
+}
+// minimal rules engine for replay (captures + area of board only; legality is the server's job)
+function replayRows(n, moves, upto) {
+  const g = Array.from({length: n}, () => Array(n).fill("."));
+  const nb = (x, y) => [[x+1,y],[x-1,y],[x,y+1],[x,y-1]].filter(([a,b]) => a >= 0 && b >= 0 && a < n && b < n);
+  const group = (x, y) => { const col = g[y][x], st = [[x,y]], seen = new Set([x+","+y]); let libs = 0; const out = [];
+    while (st.length) { const [a,b] = st.pop(); out.push([a,b]);
+      for (const [p,q] of nb(a,b)) { const k = p+","+q; if (seen.has(k)) continue;
+        if (g[q][p] === ".") { seen.add(k); libs++; } else if (g[q][p] === col) { seen.add(k); st.push([p,q]); } } }
+    return [out, libs]; };
+  for (let i = 0; i < upto && i < moves.length; i++) {
+    const m = moves[i], p = coordXY(m.coord, n); if (!p) continue;
+    const [x, y] = p, me = m.color === "B" ? "X" : "O", opp = me === "X" ? "O" : "X";
+    g[y][x] = me;
+    for (const [a,b] of nb(x,y)) if (g[b][a] === opp) { const [st, l] = group(a,b); if (!l) st.forEach(([u,v]) => g[v][u] = "."); }
+    const [own, l] = group(x,y); if (!l) own.forEach(([u,v]) => g[v][u] = ".");
+  }
+  return g.map(r => r.join(""));
+}
+
+// ---------------------------------------------------------------- charts
+function lineChart(el, series, o = {}) {
+  // series: [{name, color, points:[{x,y,lo?,hi?}]}]; one y-axis only
+  const W = 900, H = o.height || 300, L = 52, R = o.right || 150, T = 12, B = 30;
+  const all = series.flatMap(s => s.points);
+  if (!all.length) { el.innerHTML = `<div class="empty">${o.empty || "No data yet."}</div>`; return; }
+  let x0 = Math.min(...all.map(p => p.x)), x1 = Math.max(...all.map(p => p.x));
+  if (x0 === x1) { x0 -= 1; x1 += 1; }
+  let y0 = Math.min(...all.map(p => p.lo ?? p.y)), y1 = Math.max(...all.map(p => p.hi ?? p.y));
+  const padY = Math.max(20, (y1 - y0) * .08); y0 -= padY; y1 += padY;
+  const step = niceStep((y1 - y0) / 5); y0 = Math.floor(y0 / step) * step; y1 = Math.ceil(y1 / step) * step;
+  const sx = x => L + (x - x0) / (x1 - x0) * (W - L - R), sy = y => T + (1 - (y - y0) / (y1 - y0)) * (H - T - B);
+  let s = `<svg viewBox="0 0 ${W} ${H}">`;
+  for (let v = y0; v <= y1 + 1e-9; v += step) s += `<line x1="${L}" x2="${W - R}" y1="${sy(v)}" y2="${sy(v)}" stroke="var(--grid)"/><text x="${L - 8}" y="${sy(v) + 4}" font-size="11" text-anchor="end" fill="var(--muted)">${fixed(v)}</text>`;
+  const xs = Math.max(1, niceStep((x1 - x0) / 8));
+  for (let v = Math.ceil(x0 / xs) * xs; v <= x1; v += xs) s += `<text x="${sx(v)}" y="${H - 8}" font-size="11" text-anchor="middle" fill="var(--muted)">${fixed(v)}</text>`;
+  s += `<line x1="${L}" x2="${W - R}" y1="${H - B}" y2="${H - B}" stroke="var(--axis)"/>`;
+  if (o.xLabel) s += `<text x="${W - R}" y="${H - 8}" font-size="11" text-anchor="end" fill="var(--muted)" dx="${R - 4}">${esc(o.xLabel)}</text>`;
+  for (const se of series) {
+    const pts = se.points; if (!pts.length) continue;
+    if (o.band && pts[0].lo != null) {
+      const up = pts.map(p => `${sx(p.x)},${sy(p.hi)}`).join(" "), dn = pts.slice().reverse().map(p => `${sx(p.x)},${sy(p.lo)}`).join(" ");
+      s += `<polygon points="${up} ${dn}" fill="${se.color}" opacity=".14"/>`;
+    }
+    s += `<polyline points="${pts.map(p => `${sx(p.x)},${sy(p.y)}`).join(" ")}" fill="none" stroke="${se.color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
+    const lp = pts[pts.length - 1];
+    if (series.length <= 4) s += `<circle cx="${sx(lp.x)}" cy="${sy(lp.y)}" r="4" fill="${se.color}" stroke="var(--surface)" stroke-width="2"/><text x="${sx(lp.x) + 8}" y="${sy(lp.y) + 4}" font-size="11" fill="var(--ink-2)">${esc(se.short || se.name)} ${fixed(lp.y)}</text>`;
+  }
+  s += `<line class="xh" x1="0" x2="0" y1="${T}" y2="${H - B}" stroke="var(--axis)" style="display:none"/><g class="dots"></g>`;
+  s += `<rect x="${L}" y="${T}" width="${W - L - R}" height="${H - T - B}" fill="transparent" class="hit"/></svg><div class="tip"></div>`;
+  el.innerHTML = s; el.classList.add("chart");
+  const svg = $("svg", el), tip = $(".tip", el), xh = $(".xh", el), dots = $(".dots", el);
+  const xsAll = [...new Set(all.map(p => p.x))].sort((a, b) => a - b);
+  $(".hit", el).addEventListener("mousemove", ev => {
+    const r = svg.getBoundingClientRect(), mx = (ev.clientX - r.left) / r.width * W;
+    const xv = x0 + (mx - L) / (W - L - R) * (x1 - x0);
+    const near = xsAll.reduce((a, b) => Math.abs(b - xv) < Math.abs(a - xv) ? b : a);
+    xh.setAttribute("x1", sx(near)); xh.setAttribute("x2", sx(near)); xh.style.display = "";
+    let rows = "", d = "";
+    for (const se of series) { const p = se.points.find(q => q.x === near); if (!p) continue;
+      d += `<circle cx="${sx(p.x)}" cy="${sy(p.y)}" r="4" fill="${se.color}" stroke="var(--surface)" stroke-width="2"/>`;
+      rows += `<div><span class="sw" style="background:${se.color}"></span>${esc(se.name)} <b>${fixed(p.y, o.dec || 0)}</b>${p.lo != null ? ` <span class="muted">± ${fixed((p.hi - p.lo) / 2)}</span>` : ""}${p.note ? ` <span class="muted">${esc(p.note)}</span>` : ""}</div>`; }
+    dots.innerHTML = d;
+    tip.innerHTML = `<div class="muted">${esc(o.xName || "x")} ${near}</div>` + rows;
+    tip.style.display = "block";
+    const px = (sx(near) / W) * r.width;
+    tip.style.left = Math.min(px + 12, r.width - tip.offsetWidth - 4) + "px"; tip.style.top = "8px";
+  });
+  $(".hit", el).addEventListener("mouseleave", () => { tip.style.display = "none"; xh.style.display = "none"; dots.innerHTML = ""; });
+}
+function niceStep(raw) { const p = Math.pow(10, Math.floor(Math.log10(raw || 1))); const f = raw / p; return (f < 1.5 ? 1 : f < 3.5 ? 2 : f < 7.5 ? 5 : 10) * p; }
+
+function barChart(el, bars, o = {}) {
+  // bars: [{x, y, label}] single series, baseline 0
+  const W = 900, H = o.height || 160, L = 40, R = 10, T = 10, B = 24;
+  if (!bars.length) { el.innerHTML = `<div class="empty">${o.empty || "No data."}</div>`; return; }
+  const n = bars.length, ymax = Math.max(1, ...bars.map(b => b.y)), step = niceStep(ymax / 4), top = Math.ceil(ymax / step) * step;
+  const bw = (W - L - R) / n, sy = y => T + (1 - y / top) * (H - T - B);
+  let s = `<svg viewBox="0 0 ${W} ${H}">`;
+  for (let v = 0; v <= top + 1e-9; v += step) s += `<line x1="${L}" x2="${W - R}" y1="${sy(v)}" y2="${sy(v)}" stroke="var(--grid)"/><text x="${L - 6}" y="${sy(v) + 4}" font-size="11" text-anchor="end" fill="var(--muted)">${fixed(v)}</text>`;
+  bars.forEach((b, i) => {
+    const h = Math.max(0, sy(0) - sy(b.y)), x = L + i * bw + 1, w = Math.max(1, bw - 2);
+    const col = b.y >= (o.hi || 5) ? "var(--bad)" : "var(--accent)";
+    s += `<rect class="b" data-i="${i}" x="${x}" y="${sy(0) - h}" width="${w}" height="${h}" rx="${Math.min(4, w / 2)}" fill="${col}"/>`;
+    s += `<rect class="hb" data-i="${i}" x="${L + i * bw}" y="${T}" width="${bw}" height="${H - T - B}" fill="transparent"/>`;
+  });
+  s += `<line x1="${L}" x2="${W - R}" y1="${sy(0)}" y2="${sy(0)}" stroke="var(--axis)"/></svg><div class="tip"></div>`;
+  el.innerHTML = s; el.classList.add("chart");
+  const tip = $(".tip", el), svg = $("svg", el);
+  el.querySelectorAll(".hb").forEach(r => {
+    r.addEventListener("mousemove", ev => { const b = bars[+r.dataset.i], bb = svg.getBoundingClientRect();
+      tip.innerHTML = b.label; tip.style.display = "block";
+      tip.style.left = Math.min(ev.clientX - bb.left + 12, bb.width - tip.offsetWidth - 4) + "px"; tip.style.top = "4px"; });
+    r.addEventListener("mouseleave", () => tip.style.display = "none");
+    if (o.onClick) r.addEventListener("click", () => o.onClick(bars[+r.dataset.i]));
+  });
+}
+const seqColor = v => v == null ? "var(--seq-0)" : `var(--seq-${Math.max(1, Math.min(6, Math.round(v * 5) + 1))})`;
+
+// ---------------------------------------------------------------- views
+let LB = null;
+async function overview() {
+  const lb = LB = await api("/api/leaderboard");
+  const runs = lb.runs.slice().sort((a, b) => (b.elo ?? -1e9) - (a.elo ?? -1e9));
+  const rated = lb.tiers.filter(t => t.counts_for_rating).map(t => t.name);
+  const tiers = lb.tiers.map(t => t.name);
+  const colorOf = Object.fromEntries(lb.runs.map((r, i) => [r.id, SERIES(i)]));
+  const rows = runs.map((r, i) => `<tr class="click" onclick="location.hash='#/run/${esc(r.id)}'">
+    <td class="num muted">${r.elo != null && r.games_played >= 20 ? i + 1 : "–"}</td>
+    <td><span class="sw" style="background:${colorOf[r.id]}"></span><b>${esc(r.model || r.name)}</b> <span class="muted">${esc(r.name !== r.model ? r.name : "")}</span></td>
+    <td>${esc(r.harness)}</td><td class="ink2">${esc(r.reasoning || "–")}</td><td class="ink2">${esc(r.context || "–")}</td>
+    <td>${r.live ? `<span class="pill live">● Game ${r.live.game_no} · move ${r.live.moves}</span>` : `<span class="pill">${esc(r.status)}</span>`}</td>
+    <td class="num"><b>${fixed(r.elo)}</b>${r.elo_se != null ? ` <span class="muted">±${fixed(r.elo_se)}</span>` : ""}</td>
+    <td class="num" style="color:${r.gain > 0 ? "var(--good)" : r.gain < 0 ? "var(--bad)" : "inherit"}">${r.gain != null ? (r.gain > 0 ? "+" : "") + fixed(r.gain) : "–"}</td>
+    <td class="num">${r.wins} · ${r.losses}</td><td class="num">${pct(r.win_rate)}</td>
+    <td><div class="ladder">${tiers.map(t => { const s = r.per_tier[t]; return `<span title="${esc(t)}: ${s ? `${s.wins}/${s.games} won` : "not played"}" style="background:${seqColor(s ? s.score : null)}"></span>`; }).join("")}</div></td>
+    <td class="num">${r.illegal}</td><td class="num">${r.avg_point_loss != null ? fixed(r.avg_point_loss, 1) : "–"}</td>
+    <td class="num">${r.games_played} / ${r.target_games}</td><td class="num ink2">${fmtTime(r.wall_seconds)}</td></tr>`).join("");
+  $("#app").innerHTML = `
+    <div class="card tw"><table>
+      <thead><tr><th class="num">#</th><th>Model</th><th>Harness</th><th>Reasoning</th><th>Context</th><th>Status</th>
+      <th class="num">Elo</th><th class="num" title="Current Elo minus Elo over the first full rating window">Gain</th><th class="num">W · L</th><th class="num">Win</th><th>Score vs ladder (${esc(tiers[0])} → ${esc(tiers[tiers.length - 1])})</th>
+      <th class="num">Illegal</th><th class="num" title="Average points lost per move vs. KataGo">Pt loss</th><th class="num">Games</th><th class="num">Time</th></tr></thead>
+      <tbody>${rows || `<tr><td colspan="15" class="empty">No runs yet.</td></tr>`}</tbody></table></div>
+    <p class="muted">Elo: maximum-a-posteriori fit over each run's last ${lb.rating_window} games against rated opponents (${esc(rated.join(", "))}), opponents fixed at calibrated ratings. Ladder cells: score against each opponent, darker = higher.</p>
+    <h2>Elo journey</h2><div class="card"><div class="legend" id="lg"></div><div id="ej"></div></div>
+    <h2>Opponent ladder</h2><div class="card tw"><table><thead><tr><th>Opponent</th><th class="num">Calibrated Elo</th><th>How it plays</th><th>Rated</th></tr></thead>
+      <tbody>${lb.tiers.map(t => `<tr><td><b>${esc(t.name)}</b></td><td class="num">${t.elo != null ? fixed(t.elo) + (t.elo_se ? ` <span class="muted">±${fixed(t.elo_se)}</span>` : "") : `<span class="muted">not calibrated</span>`}</td><td class="ink2">${esc(t.description)}</td><td>${t.counts_for_rating ? "yes" : "no"}</td></tr>`).join("")}</tbody></table></div>`;
+  const details = await Promise.all(lb.runs.map(r => api(`/api/runs/${encodeURIComponent(r.id)}`)));
+  const series = details.map((d, i) => ({name: lb.runs[i].name, short: lb.runs[i].name.length > 16 ? lb.runs[i].name.slice(0, 15) + "…" : lb.runs[i].name,
+    color: colorOf[lb.runs[i].id], points: d.journey.map(p => ({x: p.game_no, y: p.elo}))})).filter(s => s.points.length);
+  $("#lg").innerHTML = series.map(s => `<span><span class="sw" style="background:${s.color}"></span>${esc(s.name)}</span>`).join("");
+  lineChart($("#ej"), series, {xName: "game", xLabel: "game", empty: "Ratings appear after 5 rated games."});
+}
+
+async function runView(id) {
+  const d = await api(`/api/runs/${encodeURIComponent(id)}`);
+  if (!d.ok) { $("#app").innerHTML = `<div class="empty">${esc(d.error?.message)}</div>`; return; }
+  const s = d.summary, tiers = Object.keys(d.phases);
+  const tile = (k, v) => `<div class="card tile"><div class="k">${k}</div><div class="v">${v}</div></div>`;
+  $("#app").innerHTML = `
+    <p><a href="#/">← Overview</a></p>
+    <h2 style="margin-top:6px">${esc(s.model || s.name)} <span class="muted">· ${esc(s.harness)} · ${esc(s.name)}</span></h2>
+    <div class="tiles">${tile("Elo (last window)", s.elo != null ? `${fixed(s.elo)} <span class="muted" style="font-size:14px">±${fixed(s.elo_se)}</span>` : "–")}
+      ${tile("Peak Elo", fixed(s.peak_elo))}${tile("Gain since first window", s.gain != null ? (s.gain > 0 ? "+" : "") + fixed(s.gain) : "–")}${tile("W · L", `${s.wins} · ${s.losses}`)}${tile("Games", `${s.games_played} / ${s.target_games}`)}
+      ${tile("Illegal attempts", s.illegal)}${tile("Avg point loss / move", s.avg_point_loss != null ? fixed(s.avg_point_loss, 2) : "–")}
+      ${tile("Engine top-move match", pct(s.engine_match_rate))}${tile("Time", fmtTime(s.wall_seconds))}</div>
+    <h2>Elo journey</h2><div class="card"><div id="ej"></div></div>
+    <h2>Point loss per game</h2><div class="card"><div id="pl"></div><p class="muted">Average points lost per agent move, from a KataGo review of each finished game. Lower is better.${d.engine_hidden ? " Hidden while the run is in progress unless you open the site with ?key=VIEWER_TOKEN, so the agent cannot read engine feedback from the public API." : ""}</p></div>
+    <h2>Score by opponent, run split into quarters</h2>
+    <div class="card tw"><table><thead><tr><th>Opponent</th><th class="num">Q1</th><th class="num">Q2</th><th class="num">Q3</th><th class="num">Q4</th></tr></thead>
+    <tbody>${tiers.filter(t => d.phases[t].some(v => v != null)).map(t => `<tr><td>${esc(t)}</td>${d.phases[t].map(v => `<td class="num">${pct(v)}</td>`).join("")}</tr>`).join("") || `<tr><td colspan="5" class="empty">No games yet.</td></tr>`}</tbody></table></div>
+    <h2>Games</h2>${gamesTable(d.games.slice().reverse())}`;
+  lineChart($("#ej"), [{name: "Elo", color: "var(--s1)", points: d.journey.map(p => ({x: p.game_no, y: p.elo, lo: p.elo - p.se, hi: p.elo + p.se}))}],
+    {band: true, xName: "game", xLabel: "game", right: 60, empty: "Ratings appear after 5 rated games."});
+  const pl = d.games.filter(g => g.review_summary).map(g => ({x: g.game_no, y: g.review_summary.avg_loss, id: g.id,
+    label: `<b>Game ${g.game_no}</b> vs ${esc(g.opponent)}<br>${fixed(g.review_summary.avg_loss, 2)} pts/move · ${g.review_summary.blunders} blunders<br>${esc(g.result)} (${g.winner === "agent" ? "win" : "loss"})`}));
+  barChart($("#pl"), pl, {hi: 99, empty: "No reviewed games yet.", onClick: b => location.hash = `#/game/${b.id}`});
+}
+
+function gamesTable(games) {
+  return `<div class="card tw"><table><thead><tr><th class="num">Game</th><th>Opponent</th><th>Colour</th><th>Result</th><th>Outcome</th><th>Ended by</th><th class="num">Moves</th><th class="num">Illegal</th><th class="num">Pt loss</th></tr></thead><tbody>
+  ${games.map(g => `<tr class="click" onclick="location.hash='#/game/${g.id}'"><td class="num">${g.game_no}</td><td>${esc(g.opponent)}</td><td>${g.agent_color === "B" ? "Black" : "White"}</td>
+    <td>${esc(g.result)}</td><td style="color:${g.winner === "agent" ? "var(--good)" : "var(--bad)"}">${g.winner === "agent" ? "Win" : "Loss"}</td><td class="ink2">${esc(g.end_reason)}</td>
+    <td class="num">${g.moves_count}</td><td class="num">${g.illegal_count}</td><td class="num">${g.review_summary ? fixed(g.review_summary.avg_loss, 2) : "–"}</td></tr>`).join("") || `<tr><td colspan="9" class="empty">No finished games yet.</td></tr>`}
+  </tbody></table></div>`;
+}
+
+async function gamesView() {
+  const lb = LB || await api("/api/leaderboard");
+  if (!lb.runs.length) { $("#app").innerHTML = `<div class="empty">No runs yet.</div>`; return; }
+  const sel = sessionStorage.getItem("gamesRun") || lb.runs[0].id;
+  $("#app").innerHTML = `<p>Run <select id="rs">${lb.runs.map(r => `<option value="${esc(r.id)}" ${r.id === sel ? "selected" : ""}>${esc(r.model || r.name)} · ${esc(r.harness)}</option>`).join("")}</select></p><div id="gl"></div>`;
+  const load = async id => { try { sessionStorage.setItem("gamesRun", id); } catch (e) {} const d = await api(`/api/runs/${encodeURIComponent(id)}`); $("#gl").innerHTML = gamesTable(d.games.slice().reverse()); };
+  $("#rs").onchange = e => load(e.target.value);
+  load(sel);
+}
+
+async function gameView(id) {
+  const d = await api(`/api/games/${id}`);
+  if (!d.ok) { $("#app").innerHTML = `<div class="empty">${esc(d.error?.message)}</div>`; return; }
+  const g = d.game, n = g.size, moves = d.moves, rev = d.review || [];
+  const revBy = Object.fromEntries(rev.map(r => [r.ply, r]));
+  let cur = moves.length, play = null;
+  const sc = d.scoring;
+  $("#app").innerHTML = `<p><a href="#/run/${esc(g.run_id)}">← Run</a></p>
+    <h2 style="margin-top:6px">Game ${g.game_no} vs ${esc(g.opponent)} <span class="muted">· agent ${g.agent_color === "B" ? "Black" : "White"} · ${esc(g.result || "in progress")} · ${esc(g.end_reason || "")}</span></h2>
+    <div class="replay"><div><div class="card" id="bd"></div>
+      <div class="controls"><button id="b0">⏮</button><button id="bp">◀</button><button id="pl">▶ Play</button><button id="bn">▶︎</button><button id="b1">⏭</button>
+      <input type="range" id="sl" min="0" max="${moves.length}" value="${moves.length}"></div>
+      <p class="ink2" id="info"></p></div>
+    <div><div class="card"><div class="muted" style="margin-bottom:6px">Moves (wavy = agent move losing ≥ 5 points)</div><div class="moves" id="mv"></div></div>
+      ${rev.length ? `<h2>Points lost per agent move</h2><div class="card"><div id="lc"></div></div>` : `<p class="muted">${d.engine_hidden ? "Engine review is hidden while the run is in progress (open the site with ?key=VIEWER_TOKEN to see it)." : "Engine review not available yet."}</p>`}
+      ${sc ? `<p class="ink2">Final count: Black ${sc.black_area} · White ${sc.white_area} + komi ${sc.komi}. Dead stones removed: ${esc((sc.dead_coords || []).join(", ") || "none")}.</p>` : ""}
+      ${d.illegal.length ? `<p class="ink2">Illegal attempts: ${d.illegal.map(i => `${esc(i.coord)} (${esc(i.code)})`).join(", ")}</p>` : ""}
+      <p><a id="dl" download="game-${g.game_no}.sgf">Download SGF</a> · <a href="#" id="cp">Copy SGF</a></p>
+      <pre>${esc(d.sgf)}</pre></div></div>`;
+  $("#mv").innerHTML = moves.map((m, i) => { const r = revBy[m.ply]; const bl = r && m.actor === "agent" && r.loss >= 5;
+    return `<span data-i="${i + 1}" class="${bl ? "bl" : ""}" title="${r ? `loss ${r.loss} · best ${esc(r.best)}` : ""}">${m.ply}.<i class="st ${m.color === "B" ? "b" : "w"}"></i>${esc(m.coord)}</span>`; }).join("");
+  const blob = new Blob([d.sgf], {type: "application/x-go-sgf"}); $("#dl").href = URL.createObjectURL(blob);
+  $("#cp").onclick = e => { e.preventDefault(); navigator.clipboard?.writeText(d.sgf); e.target.textContent = "Copied"; };
+  const show = k => {
+    cur = Math.max(0, Math.min(moves.length, k));
+    const last = cur ? coordXY(moves[cur - 1].coord, n) : null;
+    $("#bd").innerHTML = boardSVG(replayRows(n, moves, cur), {last});
+    $("#sl").value = cur;
+    const m = moves[cur - 1], r = m && revBy[m.ply];
+    $("#info").innerHTML = m ? `Move ${m.ply}: ${m.color === "B" ? "Black" : "White"} ${esc(m.coord)} (${m.actor})` +
+      (r ? ` · engine best ${esc(r.best)} · ${r.loss} pts lost · lead after ${r.lead_after > 0 ? "+" : ""}${r.lead_after}` : "") +
+      (m.think_ms != null ? ` · thought ${fmtTime(m.think_ms / 1000)}` : "") : "Empty board";
+    document.querySelectorAll("#mv span").forEach(s => s.classList.toggle("cur", +s.dataset.i === cur));
+  };
+  $("#b0").onclick = () => show(0); $("#b1").onclick = () => show(moves.length);
+  $("#bp").onclick = () => show(cur - 1); $("#bn").onclick = () => show(cur + 1);
+  $("#sl").oninput = e => show(+e.target.value);
+  $("#mv").onclick = e => { if (e.target.dataset.i) show(+e.target.dataset.i); };
+  $("#pl").onclick = () => { if (play) { clearInterval(play); play = null; $("#pl").textContent = "▶ Play"; return; }
+    if (cur >= moves.length) show(0); $("#pl").textContent = "❚❚ Pause";
+    play = setInterval(() => { if (cur >= moves.length) { clearInterval(play); play = null; $("#pl").textContent = "▶ Play"; return; } show(cur + 1); }, 600); };
+  timer = { clear: () => play && clearInterval(play) };
+  if (rev.length) barChart($("#lc"), rev.filter(r => moves[r.ply - 1]?.actor === "agent").map(r => ({x: r.ply, y: r.loss, ply: r.ply,
+    label: `<b>Move ${r.ply}</b> ${esc(r.move)}<br>${r.loss} pts lost · best ${esc(r.best)}`})), {hi: 5, onClick: b => show(b.ply)});
+  show(moves.length);
+}
+
+async function liveView() {
+  const render = async () => {
+    const d = await api("/api/live");
+    if (!$("#lv")) return;
+    $("#lv").innerHTML = d.games.length ? d.games.map(x => {
+      const last = x.moves.length ? coordXY(x.moves[x.moves.length - 1].slice(1), x.board_rows.length) : null;
+      return `<div class="card"><div style="display:flex;justify-content:space-between;gap:8px;margin-bottom:8px"><b>${esc(x.model || x.run_name)}</b><span class="pill live">● live</span></div>
+        <div class="ink2" style="margin-bottom:8px">Game ${x.game.game_no} vs ${esc(x.game.opponent)} · agent ${x.game.agent_color === "B" ? "Black" : "White"} · move ${x.game.moves_count}${x.game.illegal_count ? ` · ${x.game.illegal_count} illegal` : ""}</div>
+        ${boardSVG(x.board_rows, {last})}<div class="muted" style="margin-top:6px;font-size:12px">${x.moves.slice(-8).map(esc).join(" · ")}</div></div>`; }).join("")
+      : `<div class="empty">No games in progress.</div>`;
+  };
+  $("#app").innerHTML = `<div class="grid-live" id="lv"></div>`;
+  await render();
+  timer = setInterval(render, 3000);
+}
+
+async function route() {
+  if (timer && timer.clear) timer.clear(); else stopTimer();
+  timer = null;
+  const h = location.hash.replace(/^#\/?/, ""), [a, b] = h.split("/");
+  document.querySelectorAll("nav a").forEach(x => x.classList.toggle("on", x.dataset.r === (a === "run" || a === "game" ? "" : a)));
+  try {
+    if (a === "live") await liveView();
+    else if (a === "games") await gamesView();
+    else if (a === "run" && b) await runView(decodeURIComponent(b));
+    else if (a === "game" && b) await gameView(+b);
+    else await overview();
+  } catch (e) { $("#app").innerHTML = `<div class="empty">Could not load data: ${esc(e.message)}</div>`; }
+}
+addEventListener("hashchange", route);
+route();
+</script>
+</body>
+</html>

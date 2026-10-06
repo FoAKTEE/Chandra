@@ -82,3 +82,9 @@ Waves (maximal topological scheduling): **W1** import ∥ kg-service ∥ ledger 
   `verify:` object, no tool or model attribution.
 - Ledger rows are appended only by delegated workers (`CHANDRA_ROLE=worker`) through the gated CLI.
 - Never tracked: engines, nets, run dirs, logs, judge output, build trees.
+- Two repos, every stage: the commit lands in Chandra (branch GUI_VSC, pushed to
+  origin FoAKTEE/Chandra) and is mirrored one-to-one in the outer Move47 repo (pushed to origin
+  FoAKTEE/Move47 main) as a submodule bump with the same message, the stage's author time and a
+  `Refs: Chandra <hash>` trailer. Both repos run the same gate (`_common/hooks`, strict).
+- Commit messages never mention the assistant or its vendor by name and carry no co-author or
+  attribution trailers; the model under test is named "Opus 5.5".

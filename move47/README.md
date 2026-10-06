@@ -48,6 +48,55 @@ python3 -m kgservice stop                        # scancel every kgservice job
 Tests: `python3 -m pytest -q tests/test_kgservice.py -p no:cacheprovider` (fake engine
 `tests/fake_katago.py`, no GPU). GPU smoke across a forced backend kill: `scripts/kg_smoke.py`.
 
+## GPU arena: real KataGo as the opponent
+
+`goarena` on the login host plays through the service (`KATAGO_BIN=bin/kg-client`) with the
+strong net. One script pair starts and stops everything, detached (setsid + nohup, pid files):
+
+```bash
+scripts/arena_up.sh       # keepalive + `goarena serve` on 127.0.0.1:8765; idempotent
+scripts/arena_status.sh   # pids, /healthz, runs (viewer token), backends and jobs
+GOARENA_ADMIN_TOKEN=$(cat /data/haiyangw/claude/Move47/runs/move47/arena/admin.token) \
+  python3 -m harness.runner --harness tree --tree-worker mock --tree-opponent k1-p --games 1 \
+  --name smoke --run-dir /data/haiyangw/claude/Move47/runs/move47/<run> -- --budget 8 --workers 2
+scripts/arena_down.sh     # arena (+ its kg-client), keepalive, scancel the model's jobs; lists leftovers
+```
+
+State lives outside the Chandra tree in `/data/haiyangw/claude/Move47/runs/move47/arena/` (dir 700):
+`arena.db`, `admin.token` and `viewer.token` (mode 600, created once, passed to the server through
+the environment only, so they never appear in argv, logs or `ps`), `arena.log`, `keepalive.log`,
+`kg-client.log`. Website: `http://127.0.0.1:8765/?key=<viewer token>`.
+
+Ladder `config/tiers-9x9-kata1.json` (all `counts_for_rating: false`; the k1 tiers are uncalibrated):
+
+| tier | engine use |
+|---|---|
+| `random`, `greedy` | no engine (Elo kept from the b10c128 pool calibration) |
+| `k1-p` | 1 visit, temperature 0: argmax of the raw policy over legal non-eye-filling moves; `root_symmetries: 8` averages the root evaluation over all 8 symmetries, so the move is a fixed function of the position (with one random symmetry per backend, `nnRandomize`, it was not) |
+| `k1-64`, `k1-full` | 64 / 1600 visits, temperature 0: KataGo's best move |
+
+Server settings in `arena_up.sh`: `--move-timeout 3600`; `--referee-visits 1600` (one ownership
+search per finished game, ~1 s on the A100); `--review-visits 1600` (per position at priority -10,
+so an opponent query waits for at most one review position: a 38-ply game is reviewed in ~30 s, and
+k1-full replies took 0.9 s median idle, 1.0-1.7 s median / 3.0 s max under a continuous review backlog);
+adjudication `--adjudicate-winrate 0.01 --adjudicate-lead 20 --adjudicate-moves 4 --adjudicate-after 30`.
+
+**Adjudication** (off unless `--adjudicate-winrate` > 0): when the KataGo opponent's own genmove
+search gave the agent winrate < W and score lead < -L on N consecutive opponent moves played after
+ply P, the game ends as an agent loss, `end_reason=adjudicated`, `RE[W+]`/`RE[B+]` (no margin) and
+`GC[end_reason=adjudicated]`. It reads only the evaluations stored with the opponent's moves (so a
+restart keeps the streak); the agent sees the result, the reason and the rule (`goban rules`), never
+the numbers. Both conditions matter: with komi 7.5 KataGo gives Black ~4% on the empty 9x9 board.
+
+**When no backend is up** (Slurm job pending, preemption): the arena starts and serves anyway;
+kg-client holds queries until a backend registers (`KGSERVICE_WAIT`, 3600 s). goarena gives each
+engine query 600 s; past that the agent's call returns HTTP 503 `engine_unavailable` (its move is
+kept; `goban board` later produces the delayed reply), the referee falls back to Tromp-Taylor with
+the error in `scoring.method`, and a failed review is redone by `POST /api/admin/games/<id>/review`.
+
+Tests: `python3 -m pytest -q tests/test_arena_kata1.py -p no:cacheprovider` (stub engines; one test
+runs the arena through `bin/kg-client` against a backend that registers late).
+
 ## Worker sessions and sandbox
 
 Every tree-search job is a fresh `claude -p` session (`gotree.workers.CLIWorker`). Two layers keep it

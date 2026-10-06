@@ -97,6 +97,23 @@ the error in `scoring.method`, and a failed review is redone by `POST /api/admin
 Tests: `python3 -m pytest -q tests/test_arena_kata1.py -p no:cacheprovider` (stub engines; one test
 runs the arena through `bin/kg-client` against a backend that registers late).
 
+## Pilot game (move47::pilot-game)
+
+One game of `claude:claude-opus-5-5:xhigh` + gotree against `k1-full`, through the runner, detached
+(run dir outside the Chandra tree; `launch.sh` there records the exact command):
+
+```bash
+python3 -m harness.runner --harness tree --tree-worker claude:claude-opus-5-5:xhigh --tree-opponent k1-full \
+  --games 1 --name "Opus 5.5 xhigh / gotree" --model claude-opus-5-5 --reasoning xhigh --run-dir <run> \
+  --session-timeout 86400 -- --budget 32 --workers 8 --time-limit 1500 --job-timeout 900 \
+  --wrap "$PWD/bin/worker-sandbox {jobdir}"           # GOARENA_ADMIN_TOKEN from the arena's admin.token
+python3 scripts/pilot_guard.py <run> --max-usd 400      # pauses the arena run, stops the runner group above the cap
+python3 scripts/pilot_report.py <run> [--format json|md] # mid-game or finished: per-move jobs/s/USD/tokens, decision,
+                                                        # KataGo's reply; result, SGF, review point loss after the game
+```
+
+`--claude-args` values that start with `--` need the `=` form (`--claude-args=--max-budget-usd 5`).
+
 ## Worker sessions and sandbox
 
 Every tree-search job is a fresh `claude -p` session (`gotree.workers.CLIWorker`). Two layers keep it

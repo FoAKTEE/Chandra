@@ -88,3 +88,50 @@ Waves (maximal topological scheduling): **W1** import ∥ kg-service ∥ ledger 
   `Refs: Chandra <hash>` trailer. Both repos run the same gate (`_common/hooks`, strict).
 - Commit messages never mention the assistant or its vendor by name and carry no co-author or
   attribution trailers; the model under test is named "Opus 5.5".
+
+## 5. MCTS v2: large reusable tree, LLM plus learned heuristics (user steer 2026-10-07)
+
+User steer: no per-game limit on compute or API cost; switch to an MCTS design; consecutive moves
+reuse the tree and keep updating its weights in the Heuristic Learning sense; a large tree is fine.
+
+Why: v1 is PUCT in which every simulation is one LLM session, so a move gets about 32 simulations
+(pilot: the chosen move had 8 to 25 root visits; lost at 1.21 points per move). v2 decouples
+simulations from LLM calls, as AlphaGo did with its policy network.
+
+- **Simulations (code, fast).** PUCT with progressive widening over a transposition-aware tree,
+  virtual loss, many threads. Leaf value `V = (1-lam)*v_llm + lam*z_playout`; a node without an LLM
+  value uses the playout result and the learned value head. Playouts run to the end of the game
+  with a learned feature-weighted softmax policy and area scoring. Target: at least 10k
+  simulations per second on 9x9.
+- **LLM expansion (async, the expensive part).** A node is queued for an Opus 5.5 xhigh `expand`
+  job once its visits reach `n_thr` (the root and its children always); priority by visits; up to
+  `W` sessions in flight (default 16, backing off on rate limits). The result adds candidates,
+  including unconventional ones, with priors and a value; until it arrives the node uses the
+  learned priors. v1's root breadth (scouts, unconventional quota, minimum visits, noise) stays.
+- **Reuse.** One tree per game, never reset: after our move and the reply the new root keeps its
+  whole subtree and statistics. The DAG (L0) keeps LLM evaluations across games.
+- **Heuristic Learning (L3, online).** After every decision, and periodically during search, refit
+  (a) policy weights, shared by the prior and the playout policy, over one feature set
+  (colour-relative 3x3 pattern, capture, atari, self-atari, escape, ladder, distance to the last
+  move, line) to the visit distributions of well-visited nodes; (b) value weights to the
+  backed-up Q of well-visited nodes and to finished game results; (c) the mixing weights `lam`
+  (LLM value vs playout) and `beta` (LLM prior vs learned prior) from each source's error against
+  the deeper search's own Q. Weights are versioned files with a regression set. Targets come
+  only from our own search and game results, never from KataGo.
+- **Decision.** Most visits at the root; time per move configurable (default 30 min); no cost cap;
+  cost and time logged per move.
+- **Ablations by config.** `llm=off` (code MCTS plus learning), `playouts=off` (`lam=0`, LLM values
+  only), `hl=off` (fixed weights).
+- **CPU.** Simulation threads count against the 70% rule (about 100 of 144 threads); default 32,
+  re-checked against host load at start. GPUs stay reserved for KataGo.
+
+| node | task | preds | done when (verification) |
+|---|---|---|---|
+| `move47::mcts-engine` | M6 | import | compiled fast board, features and weighted playouts; Python tree with PUCT, widening, transpositions, reuse, virtual loss and threads; mock LLM hook; tests (rules agree with gotree.position, tactics, reuse keeps statistics); measured simulations per second on 9x9 |
+| `move47::mcts-hl` | M7 | mcts-engine | online learning of policy, value, `lam`, `beta`; versioned weight store; regression set; tests show learned weights predict held-out search targets better than the initial ones |
+| `move47::mcts-llm` | M8 | mcts-engine, worker-sandbox | async expansion queue with sandboxed Opus xhigh workers, prior and value blending, rate-limit backoff, arena play loop that keeps the tree; mock tests and a small real smoke |
+| `move47::mcts-strength` | M9 | mcts-llm, mcts-hl, arena-gpu | code-only and hybrid MCTS against k1-p and the calibrated ladder; time and cost per move |
+| `move47::mcts-game` | M10 | mcts-strength | one full 9x9 game against k1-full with no cost cap, tree and weights carried across moves; report and review like the pilot |
+
+Waves: **W4** mcts-engine with the ledger update · **W5** mcts-hl and mcts-llm · **W6**
+mcts-strength · **W7** mcts-game.

@@ -119,3 +119,40 @@ int64_t mcb_playouts(const MCBoard* b, const MCPolicy* pol, uint64_t seed, int n
     }
     return moves;
 }
+
+/* ---------------------------------------------------------------- rules (mcts/rules.py) */
+MCRules* mc_rules_new(void) {
+    mc_init();
+    return calloc(1, sizeof(MCRules));
+}
+void mc_rules_free(MCRules* r) { free(r); }
+int mc_rules_load(MCRules* r, const int32_t* spec, int n, const double* w) { return mc_rules_set(r, spec, n, w); }
+int mc_rule_ints(void) { return MC_RULE_INTS; }
+int mc_max_rules(void) { return MC_MAXRULES; }
+
+/* For each of the nm moves (gotree points; pass and illegal moves match nothing): counts[i] = rules
+   matching it, their indices appended to idx (at most cap in all).  Returns the total. */
+int mcb_rule_hits(const MCBoard* b, const MCRules* R, const int16_t* moves, int nm, int32_t* counts, int32_t* idx,
+                  int cap) {
+    static __thread MCChains ch;
+    int hit[MC_MAXRULES], feats[MC_MAXACTIVE];
+    int tot = 0;
+    mc_chains(b, &ch);
+    for (int i = 0; i < nm; i++) {
+        counts[i] = 0;
+        int p = moves[i];
+        if (p < 0 || !in_range(b, p)) continue;
+        int bp = mc_bp(b, p);
+        if (b->c[bp] != MC_EMPTY || mc_features(b, &ch, bp, 0, feats) < 0) continue;
+        int nh = mc_rule_match(b, &ch, bp, R, hit);
+        for (int k = 0; k < nh && tot < cap; k++) idx[tot++] = hit[k];
+        counts[i] = nh;
+    }
+    return tot;
+}
+
+int mcb_logits_r(const MCBoard* b, const double* w, int ladders, const MCRules* R, int16_t* moves, double* logits) {
+    int n = mc_all_logits_r(b, w, ladders, R, moves, logits);
+    for (int i = 0; i < n; i++) moves[i] = (int16_t)mc_gp(b, moves[i]);
+    return n;
+}

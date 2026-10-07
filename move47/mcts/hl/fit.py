@@ -18,11 +18,18 @@ from .data import PolicyRows
 
 
 class PolicySet:
-    """Samples' feature rows, targets and weights, concatenated for vectorised loss and gradient."""
+    """Samples' feature rows, targets and weights, concatenated for vectorised loss and gradient.
 
-    def __init__(self, rows: Sequence[PolicyRows], targets: Sequence[np.ndarray], weights: Sequence[float]):
+    ``nfeat``: the length of the parameter vector (N_FEATURES, plus one weight per model-written
+    rule whose hits the rows carry in ``xr`` / ``xc``, node move47::mcts-llm-hl).  ``normalize``:
+    the sample weights are divided by their sum (False: used as given, e.g. a search term and a
+    distillation term with a chosen relative weight)."""
+
+    def __init__(self, rows: Sequence[PolicyRows], targets: Sequence[np.ndarray], weights: Sequence[float],
+                 nfeat: int = N_FEATURES, normalize: bool = True):
         if not rows:
             raise ValueError("empty policy set")
+        self.nfeat = int(nfeat)
         self.S = len(rows)
         counts = np.array([len(r.moves) for r in rows], dtype=np.int64)
         self.starts = np.zeros(self.S + 1, dtype=np.int64)
@@ -31,10 +38,19 @@ class PolicySet:
         nf = np.concatenate([r.nf for r in rows])
         self.fi = np.concatenate([r.fi for r in rows]).astype(np.intp)
         self.ri = np.repeat(np.arange(self.R, dtype=np.intp), nf)
+        xs = [(self.starts[k] + r.xr, N_FEATURES + r.xc) for k, r in enumerate(rows)
+              if getattr(r, "xr", None) is not None and len(r.xr)]
+        if xs:
+            xri = np.concatenate([a for a, _ in xs]).astype(np.intp)
+            xfi = np.concatenate([b for _, b in xs]).astype(np.intp)
+            if int(xfi.max()) >= self.nfeat:
+                raise ValueError("a rule column lies beyond nfeat")
+            self.ri = np.concatenate([self.ri, xri])
+            self.fi = np.concatenate([self.fi, xfi])
         self.sidx = np.repeat(np.arange(self.S, dtype=np.intp), counts)
         self.tgt = np.concatenate(targets).astype(np.float64)
         w = np.asarray(weights, dtype=np.float64)
-        self.sw = w / w.sum()
+        self.sw = w / w.sum() if normalize else w
         self.moves = np.concatenate([r.moves for r in rows])
         # entropy of the targets: CE - H = KL, reported for readability
         t = self.tgt
@@ -61,7 +77,7 @@ class PolicySet:
         d = w - w0
         loss = float(self.sw @ ce) + 0.5 * l2 * float(d @ d)
         g_row = self.sw[self.sidx] * (p - self.tgt) / temperature
-        g = np.bincount(self.fi, weights=g_row[self.ri], minlength=N_FEATURES) + l2 * d
+        g = np.bincount(self.fi, weights=g_row[self.ri], minlength=self.nfeat) + l2 * d
         return loss, g
 
     def metrics(self, w: np.ndarray, temperature: float = 1.0) -> dict:

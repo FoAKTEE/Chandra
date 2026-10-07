@@ -6,6 +6,9 @@
     hl-guards            one weight file against the tactical guards and the regression positions
     hl-export-heldout    a sample of a run's held-out nodes, for the tracked learned-weights test
     hl-regression-build  regenerate mcts/regression/positions.json (code-only self-play, deep searches)
+    hl-hybrid-report     evidence of learning from model reasoning plus search (mcts-llm-hl): the heuristics
+                         book, every version and ablations on the test split, code-only search agreement
+    hl-book              render a learner dir's heuristics book as markdown
 """
 from __future__ import annotations
 
@@ -90,7 +93,38 @@ def cmd_export_heldout(a) -> int:
     return 0
 
 
+def cmd_hybrid_report(a) -> int:
+    from .evaluate import markdown, report
+    r = report(Path(a.run), Path(a.hl_dir) if a.hl_dir else None, a.code_search, a.code_sims, a.threads, a.every,
+               log=lambda m: print(m, file=sys.stderr, flush=True))
+    out = Path(a.out) if a.out else Path(a.run) / "hl-hybrid-report"
+    out.with_suffix(".json").write_text(json.dumps(r, indent=1, default=float) + "\n")
+    out.with_suffix(".md").write_text(markdown(r))
+    print(markdown(r))
+    return 0
+
+
+def cmd_book(a) -> int:
+    from .book import Book
+    print(Book(Path(a.dir)).markdown())
+    return 0
+
+
 def register(sub) -> None:
+    p = sub.add_parser("hl-hybrid-report", help="mcts-llm-hl evidence: book, versions and ablations on the test split")
+    p.add_argument("--run", required=True, help="run dir of hybrid-selfplay / play / llm-search")
+    p.add_argument("--hl-dir", default="", help="learning state (default <run>/hl)")
+    p.add_argument("--code-search", type=int, default=0, help="test nodes for the code-only search agreement (0: skip)")
+    p.add_argument("--code-sims", type=int, default=100_000)
+    p.add_argument("--threads", type=int, default=8)
+    p.add_argument("--every", type=int, default=1, help="evaluate every k-th version")
+    p.add_argument("--out", default="", help="output path without suffix (default <run>/hl-hybrid-report)")
+    p.set_defaults(fn=cmd_hybrid_report)
+
+    p = sub.add_parser("hl-book", help="print a learner dir's heuristics book (markdown)")
+    p.add_argument("--dir", required=True)
+    p.set_defaults(fn=cmd_book)
+
     p = sub.add_parser("learn-selfplay", help="code-only self-play with online Heuristic Learning")
     p.add_argument("--run", required=True, help="learner run dir (outside Chandra); resumes if it exists")
     p.add_argument("--games", type=int, default=1)

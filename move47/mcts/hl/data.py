@@ -65,6 +65,11 @@ def heldout(key: int, frac: float) -> bool:
     return ((int(key) * _GOLD) & _M64) / 2.0 ** 64 < frac
 
 
+def is_test(key: int, frac: float) -> bool:
+    """The test split (mcts-llm-hl evaluation): a second, independent hash of the node key."""
+    return frac > 0 and ((((int(key) ^ 0x5DEECE66D2B7E151) * 0xD6E8FEB86659FD93) & _M64) / 2.0 ** 64) < frac
+
+
 def move_code(m, size: int) -> Optional[int]:
     """A move (point, coordinate, None / 'pass' / -1) as an int with PASS = -1; None if unusable."""
     try:
@@ -99,6 +104,9 @@ class Sample:
     game: int                      # game counter of the learner
     version: str                   # weights version in use when it was observed
     t: float                       # unix time
+    hy: bool = False               # from a hybrid search (model evaluations in the tree; mcts-llm-hl)
+    xp: bool = False               # the node itself carried the model's priors
+    dec: int = 0                   # the learner's update counter when observed (one search between updates)
 
     @property
     def to_play(self) -> str:
@@ -115,13 +123,14 @@ class Sample:
         return {"sid": self.sid, "key": f"{self.key:016x}", "b": self.board,
                 "pi": {str(k): round(v, 5) for k, v in self.pi.items()},
                 "q": None if self.q is None else round(self.q, 5), "qp": None if self.qp is None else round(self.qp, 5),
-                "n": self.n, "d": self.depth, "g": self.game, "v": self.version, "t": round(self.t, 2)}
+                "n": self.n, "d": self.depth, "g": self.game, "v": self.version, "t": round(self.t, 2),
+                **({"hy": 1} if self.hy else {}), **({"xp": 1} if self.xp else {}), **({"dec": self.dec} if self.dec else {})}
 
     @classmethod
     def from_json(cls, d: dict) -> "Sample":
         return cls(int(d["sid"]), int(d["key"], 16), d["b"], {int(k): float(v) for k, v in d["pi"].items()},
                    d.get("q"), d.get("qp"), int(d["n"]), int(d.get("d", 0)), int(d.get("g", 0)), d.get("v", ""),
-                   float(d.get("t", 0.0)))
+                   float(d.get("t", 0.0)), bool(d.get("hy", 0)), bool(d.get("xp", 0)), int(d.get("dec", 0)))
 
 
 # ------------------------------------------------------------------ policy rows
@@ -130,6 +139,22 @@ class PolicyRows:
     moves: np.ndarray              # int16 (R,), PASS = -1
     nf: np.ndarray                 # int32 (R,), active features per move
     fi: np.ndarray                 # int32 (sum nf,), feature indices, row after row
+    xr: Optional[np.ndarray] = None   # model-written rules (mcts-llm-hl): row of each rule hit ...
+    xc: Optional[np.ndarray] = None   # ... and the rule's column (0 = the first rule of the weights)
+
+
+def with_rule_hits(rows: PolicyRows, hits: dict, columns: dict) -> PolicyRows:
+    """rows plus rule columns: hits {rule id: array of row indices the rule matches}, columns {rule id:
+    column}; rules without a column are left out."""
+    xr, xc = [], []
+    for rid, col in columns.items():
+        h = hits.get(rid)
+        if h is not None and len(h):
+            xr.append(np.asarray(h, dtype=np.int64))
+            xc.append(np.full(len(h), col, dtype=np.int64))
+    if not xr:
+        return PolicyRows(rows.moves, rows.nf, rows.fi)
+    return PolicyRows(rows.moves, rows.nf, rows.fi, np.concatenate(xr), np.concatenate(xc))
 
 
 _FEAT_BUF = (ctypes.c_int32 * 16)()
@@ -164,6 +189,13 @@ def _zero_weights() -> np.ndarray:
         from .._lib import N_FEATURES
         _ZERO = np.zeros(N_FEATURES)
     return _ZERO
+
+
+def rule_hit_rows(ruleset, board: Board, moves: np.ndarray) -> list[np.ndarray]:
+    """For each rule of a mcts.rules.RuleSet: the indices (into moves) of the moves it matches."""
+    counts, idx = ruleset.hits(board, moves)
+    rr = np.repeat(np.arange(len(moves)), counts)
+    return [rr[idx == j] for j in range(ruleset.n)]
 
 
 def censor_rows(rows: PolicyRows, t: np.ndarray) -> tuple[PolicyRows, np.ndarray]:

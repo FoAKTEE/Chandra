@@ -4,6 +4,7 @@
         --worker claude:claude-opus-5-5:xhigh --wrap '<move47>/bin/worker-sandbox {jobdir}' \
         --time-per-move 1800 --threads 32 --llm-workers 16 [--learn] [--llm off]
     python3 -m mcts llm-search --sgf game.sgf --upto 20 --run <dir> --worker ... --time 300 --llm-workers 8
+    python3 -m mcts hybrid-selfplay --run <dir> --games 3 --max-plies 16 --worker ... --learn --heuristics
 
 One tree per game: after our move and the opponent's reply the engine advances twice (never
 reset), so the new root keeps its subtree and statistics; a move list that does not continue the
@@ -15,6 +16,14 @@ asynchronously; after each decision an `abstract` job distils lessons (v1 style,
 whose LLM prior disagreed with the final visits as surprises).  Board fetching and move submission
 reuse gotree.play (engine outages, resyncs, transport errors).  Per-move JSONL record; the tree is
 saved every --save-every decisions and a restarted process resumes the game from it.
+
+Learning from model reasoning plus search (node move47::mcts-llm-hl): with --learn the learner
+(mcts.hl.OnlineLearner, state in <run>/hl or --hl-dir, shareable across runs) runs in hybrid mode
+when the model service is on: its samples are marked as hybrid-search targets and it distils the
+model's priors; with --heuristics a heuristic job after each decision (or every
+--heuristics-every decisions) proposes model-written rules and weight nudges from the search's
+surprises, gated in the background (mcts.hl.heuristics.HeuristicLoop) without blocking the next
+search.  hybrid-selfplay plays both sides with one tree per game (no arena), for the same loop.
 """
 from __future__ import annotations
 
@@ -222,7 +231,7 @@ def _status(client, log, sleep, max_wait: float = MAX_WAIT) -> dict:
 
 def play_games(client, opponent: str, games: int, player: Player, color: Optional[str] = None,
                record: Optional[Path] = None, abstract: bool = True, log: Callable[[str], None] = print,
-               sleep: Callable[[float], None] = time.sleep) -> list[dict]:
+               sleep: Callable[[float], None] = time.sleep, heuristics=None) -> list[dict]:
     svc, learner = player.service, player.learner
     results = []
     for _ in range(games):
@@ -263,12 +272,15 @@ def play_games(client, opponent: str, games: int, player: Player, color: Optiona
             if svc is not None and abstract:
                 svc.request_abstract(summ["moves"], summ["best_move"], summ["q"], summ["root_n"],
                                      label=f"g{game_no}p{ply}")
+            heur = heuristics.after_decision(player.eng, f"g{game_no}p{ply}") if heuristics is not None else None
             rec = {"game": game_no, "ply": ply, "color": "B" if summ["to_play"] == "X" else "W", "move": mv,
                    "decision": summ["decision"], "sync": how, "time_s": round(summ["time_s"], 2), "sims": summ["sims"],
                    "sims_per_s": round(summ["sims_per_s"]), "nodes": summ["nodes"], "root_n": summ["root_n"],
                    "root_n_start": summ["root_n_start"], "q": summ["q"], "depth_mean": round(summ["depth_mean"], 1),
                    "stop_reason": summ["stop_reason"], "gc_rounds": summ["gc_rounds"], "weights": summ["weights"],
                    "root_table": root_table(summ, lp), "llm_root": llm_root, "llm": player.llm_delta()}
+            if heur is not None:
+                rec["heuristic"] = {k: heur.get(k) for k in ("requested", "reason", "weights") if k in heur}
             ll = rec["llm"]
             log(f"  move {ply}: {mv} [{summ['decision']['rule']}] ({how}) {summ['sims']} sims in {summ['time_s']:.0f}s, "
                 f"root_n {summ['root_n']} "
@@ -279,7 +291,9 @@ def play_games(client, opponent: str, games: int, player: Player, color: Optiona
             r = play_decision(client, summ, before, game_no, log, sleep)
             if learner is not None:
                 try:
-                    learner.update()
+                    u = learner.update()
+                    if isinstance(u, dict):
+                        rec["update"] = _brief_update(u)
                 except Exception as e:
                     log(f"  learner.update failed: {e!r}")
             rec["seconds"] = round(time.time() - t0, 2)
@@ -324,7 +338,11 @@ def check_threads(threads: int, frac: float, log: Callable[[str], None]) -> int:
     return threads
 
 
-def make_learner(run: Path, weights, log):
+def make_learner(run: Path, weights, log, hl_dir: Optional[str] = None, cfg: Optional[dict] = None,
+                 hybrid: bool = False):
+    """The run's OnlineLearner (state in <run>/hl, or hl_dir to share one learning state between
+    runs); hybrid=True when the model service feeds the searches (mcts-llm-hl: hybrid targets, a
+    10% test split unless cfg says otherwise)."""
     try:
         from .hl import OnlineLearner
     except ImportError as e:
@@ -334,13 +352,60 @@ def make_learner(run: Path, weights, log):
         params = inspect.signature(OnlineLearner).parameters
     except (TypeError, ValueError):
         params = {}
-    cand = {"run_dir": run / "hl", "base": weights}      # OnlineLearner(run_dir, base=None, **cfg)
-    learner = OnlineLearner(**{k: v for k, v in cand.items() if k in params and v is not None})
+    cand = {"run_dir": Path(hl_dir).resolve() if hl_dir else run / "hl", "base": weights}
+    opts = dict(cfg or {})
+    try:
+        from .hl import DEFAULTS
+        if hybrid and "test_frac" in DEFAULTS:
+            opts.setdefault("test_frac", 0.1)
+        opts = {k: v for k, v in opts.items() if k in DEFAULTS}
+    except ImportError:
+        opts = {}
+    has_kw = any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
+    learner = OnlineLearner(**{k: v for k, v in cand.items() if k in params and v is not None},
+                            **(opts if has_kw else {}))
+    if hybrid and hasattr(learner, "mode"):
+        learner.mode = "hybrid"
     for m in ("observe", "update", "provider"):
         if not hasattr(learner, m):
             sys.exit(f"mcts.hl.OnlineLearner has no {m!r}; --learn expects observe, observe_external, "
                      f"observe_game, update and provider")
     return learner
+
+
+def _hl_opts(a) -> dict:
+    """--hl KEY=VALUE learner options (mcts.hl DEFAULTS)."""
+    if not getattr(a, "hl", None):
+        return {}
+    from .hl.cli import _kv
+    return _kv(a.hl, "learner")
+
+
+def _heuristics(a, learner, svc, run: Path, log):
+    """The heuristic-job loop of a run (--heuristics), or None."""
+    if not getattr(a, "heuristics", False):
+        return None
+    if learner is None or svc is None or not hasattr(learner, "consider"):
+        sys.exit("--heuristics needs --learn (mcts.hl with consider) and the model service (--llm on)")
+    from .hl.heuristics import HeuristicLoop
+    if a.heuristic_timeout:
+        svc.cfg.heuristic_timeout = a.heuristic_timeout
+    return HeuristicLoop(learner, svc, every=a.heuristics_every, k=a.heuristic_surprises,
+                         min_visits=a.heuristic_min_visits, log=log, record=run / "heuristics.jsonl")
+
+
+def _brief_update(u: dict) -> dict:
+    p = u.get("policy") or {}
+    out = {k: u.get(k) for k in ("version", "accepted", "time_s")}
+    out["reason"] = str(u.get("reason", ""))[:200]
+    if p:
+        out["heldout_ce"] = [round(p["heldout"]["parent"]["ce"], 5), round(p["heldout"]["candidate"]["ce"], 5)]
+        out["heldout_n"] = p["heldout"]["parent"]["n"]
+        out["distill_lam"] = (p.get("distill") or {}).get("lam")
+    if isinstance(u.get("agreement"), dict) and "ce" in u["agreement"]:
+        out["agreement"] = {k: round(u["agreement"][k], 4) if isinstance(u["agreement"][k], float) else
+                            u["agreement"][k] for k in ("n", "ce", "top1", "mass_on_model_moves")}
+    return out
 
 
 def _llm_config(a):
@@ -407,11 +472,12 @@ def cmd_play(a) -> int:
     threads = check_threads(a.threads, a.max_load_frac, log)
     learner, weights = None, a.weights
     if a.learn:
-        learner = make_learner(run, weights, log)
+        learner = make_learner(run, weights, log, a.hl_dir, _hl_opts(a), hybrid=a.llm == "on")
         weights = learner.provider
     svc = None
     if a.llm == "on":
         svc = build_service(a, run, log, learner).start()
+    heur = _heuristics(a, learner, svc, run, log)
     _write_config(run, a, cfg, svc, threads)
     log(f"mcts play: {a.games} game(s) vs {a.opponent}, {a.time_per_move}s/move, {threads} threads, "
         f"llm {'off' if svc is None else f'{svc.worker.name} W={svc.cfg.workers}'}"
@@ -423,11 +489,14 @@ def cmd_play(a) -> int:
                     decide_cfg=dcfg)
     try:
         res = play_games(ArenaClient(a.arena, token), a.opponent, a.games, player, a.color,
-                         record=run / "moves.jsonl", abstract=not a.no_abstract, log=log)
+                         record=run / "moves.jsonl", abstract=not a.no_abstract, log=log, heuristics=heur)
     finally:
         if svc is not None:
             svc.close(wait_s=a.drain)
             log(f"llm totals: {json.dumps(svc.stats())}")
+        if heur is not None:
+            heur.close(wait_s=max(60.0, a.drain))
+            log(f"heuristics: {json.dumps(heur.stats())}")
     print(json.dumps(res))
     return 0
 
@@ -470,13 +539,18 @@ def cmd_llm_search(a) -> int:
     threads = check_threads(a.threads, a.max_load_frac, log)
     b, hist, moves = board_from_sgf(Path(a.sgf).read_text(), a.upto)
     llm_on = a.llm == "on"
-    learner = make_calib_learner(run, a.weights, log) if (llm_on and a.calib == "online") else None
+    if llm_on and a.heuristics:          # the run's learner gates the heuristic job (mcts-llm-hl)
+        learner = make_learner(run, a.weights, log, a.hl_dir, {"value": False, **_hl_opts(a)}, hybrid=True)
+    else:
+        learner = make_calib_learner(run, a.weights, log) if (llm_on and a.calib == "online") else None
     svc = build_service(a, run, log, learner) if llm_on else None
+    heur = _heuristics(a, learner, svc, run, log) if llm_on else None
     _write_config(run, a, cfg, svc, threads)
     dcfg = _decide_config(a)
     if not llm_on:
         dcfg.rule = "visits"
-    eng = MCTS(b, history=hist, config=cfg, weights=a.weights, learner=learner)
+    eng = MCTS(b, history=hist, config=cfg, weights=learner.provider if (heur is not None) else a.weights,
+               learner=learner)
     if svc is not None:
         svc.attach(eng)
     log(f"llm-search: {Path(a.sgf).name} after {len(moves)} moves, {b.to_play} to play; warm-up {a.warmup}s code "
@@ -558,11 +632,18 @@ def cmd_llm_search(a) -> int:
     out["decision"] = d
     out["main_s"] = round(t_main, 1)
     if svc is not None:
-        svc.pause()                                  # no new sessions after the decision
+        if heur is not None:                         # only the heuristic job runs after the decision
+            out["heuristic_request"] = heur.after_decision(eng, "llm-search")
+            out["queue_dropped"] = svc.drop_queued(keep=("heuristic",))
+        else:
+            svc.pause()                              # no new sessions after the decision
         t_end = time.time()
-        while svc.stats()["running"] and time.time() - t_end < a.drain:
+        while (svc.stats()["running"] or (heur is not None and svc.stats()["queue"])) and time.time() - t_end < a.drain:
             time.sleep(1.0)
         svc.close(wait_s=0)
+        if heur is not None:
+            heur.close(wait_s=600)
+            out["heuristics"] = heur.stats()
     rr = eng.root_stats(a.top)
     q = eng.node_q(eng.root)
     out["after"] = {"sims": sims + sum(ext_sims), "extension_sims": sum(ext_sims), "root_n": int(eng.a.n[eng.root]),
@@ -590,6 +671,150 @@ def cmd_llm_search(a) -> int:
     log("root table at the decision:\n" + eng.table(a.top) + f"\n{out['seconds']}s in all")
     (run / "llm-search.json").write_text(json.dumps(out, indent=1, default=str))
     eng.close()
+    return 0
+
+
+def _start_board(spec: str, komi: float):
+    """'empty' (9x9) or 'FILE.sgf:N' (the position after N moves of the SGF)."""
+    from .board import Board, board_from_sgf
+    if spec in ("", "empty"):
+        return Board(9, komi), []
+    path, _, n = spec.rpartition(":")
+    if not path:
+        path, n = spec, ""
+    b, hist, _ = board_from_sgf(Path(path).read_text(), int(n) if n else None)
+    return b, hist
+
+
+def cmd_hybrid_selfplay(a) -> int:
+    """Self-play with the full loop and no arena: one engine plays both sides with one tree per game,
+    the model service evaluates nodes during every search, the learner refits after every decision
+    (hybrid targets, distillation) and, with --heuristics, a heuristic job after each decision
+    proposes rules and nudges that are gated in the background.  The learning state (--hl-dir or
+    <run>/hl) carries across moves, games and runs."""
+    import copy as _copy
+    from goarena.sgf import write_sgf
+    from .cli import _run_dir
+    run = _run_dir(a.run)
+    log = _logger(run)
+    cfg = _engine_config(a)
+    threads = check_threads(a.threads, a.max_load_frac, log)
+    llm_on = a.llm == "on"
+    learner, weights = None, a.weights
+    if a.learn:
+        learner = make_learner(run, weights, log, a.hl_dir, _hl_opts(a), hybrid=llm_on)
+        weights = learner.provider
+    svc = build_service(a, run, log, learner).start() if llm_on else None
+    heur = _heuristics(a, learner, svc, run, log) if llm_on else None
+    _write_config(run, a, cfg, svc, threads)
+    dcfg = _decide_config(a)
+    if not llm_on:
+        dcfg.rule = "visits"
+    starts = a.start or ["empty"]
+    gfile = run / "games.jsonl"
+    g0 = sum(1 for _ in open(gfile)) if gfile.exists() else 0
+    log(f"hybrid-selfplay: {a.games} game(s) of at most {a.max_plies} decisions from {', '.join(starts)}; "
+        f"{a.time_per_move}s/decision, {threads} threads, llm {'off' if svc is None else f'{svc.worker.name} W={svc.cfg.workers}'}"
+        f"{', learning in ' + str(learner.run_dir) if learner is not None else ''}"
+        f"{', heuristics every ' + str(a.heuristics_every) if heur is not None else ''}; run {run}")
+    stop_all = False
+    last_stats = None
+    try:
+        for gi in range(a.games):
+            if stop_all:
+                break
+            g = g0 + gi
+            board, hist = _start_board(starts[g % len(starts)], a.komi)
+            eng = MCTS(board, history=hist, config=_copy.deepcopy(cfg), weights=weights, learner=learner)
+            player = Player(run, cfg, a.time_per_move, threads, a.sims, weights, learner, svc, 0, log, decide_cfg=dcfg)
+            player.game_no = g
+            player._attach(eng)
+            if svc is not None:
+                svc.new_root(label=f"g{g}p1")
+                player._last_stats = last_stats      # the per-decision counters continue across games
+            played, t_game = [], time.time()
+            first_color = board.to_play
+            for ply in range(1, a.max_plies + 1):
+                if eng.root_board.terminal:
+                    break
+                if a.max_cost and svc is not None and svc.stats()["cost_usd"] >= a.max_cost:
+                    log(f"cost cap reached ({svc.stats()['cost_usd']:.2f} >= {a.max_cost} USD): stopping")
+                    stop_all = True
+                    break
+                waited = svc.wait_until_available(a.wait_for_model * 3600, log) if (svc is not None and
+                                                                                     a.wait_for_model > 0) else 0.0
+                t0 = time.time()
+                label = f"g{g}p{ply}"
+                summ = player.decide()
+                mv = summ["decision"]["real"]
+                lp = svc.root_llm_priors() if svc is not None else None
+                llm_root = {"evaluated": bool(lp), "value": svc.root_value(), "moves": len(lp)} if svc is not None else None
+                if svc is not None and not a.no_abstract:
+                    svc.request_abstract(summ["moves"], summ["best_move"], summ["q"], summ["root_n"], label=label)
+                hinfo = heur.after_decision(eng, label) if heur is not None else None
+                rec = {"game": g, "ply": ply, "color": "B" if summ["to_play"] == "X" else "W", "move": mv,
+                       "decision": summ["decision"], "time_s": round(summ["time_s"], 2), "sims": summ["sims"],
+                       "sims_per_s": round(summ["sims_per_s"]), "nodes": summ["nodes"], "root_n": summ["root_n"],
+                       "root_n_start": summ["root_n_start"], "q": summ["q"], "weights": summ["weights"],
+                       "expand_frac": round(summ.get("expand_frac", 0.0), 4),
+                       "root_table": root_table(summ, lp), "llm_root": llm_root, "llm": player.llm_delta()}
+                if hinfo is not None:
+                    rec["heuristic"] = hinfo
+                if svc is not None:
+                    ll_ = rec["llm"] or {}
+                    rec["model_input"] = bool(ll_.get("ok", 0) or ll_.get("applied", 0))
+                    rec["waited_for_model_s"] = round(waited, 1)
+                played.append((1 if summ["to_play"] == "X" else 2, summ["best_move"]))
+                eng.advance(summ["best_move"])
+                if svc is not None:
+                    svc.new_root(label=f"g{g}p{ply + 1}")
+                if learner is not None:
+                    try:
+                        rec["update"] = _brief_update(learner.update())
+                    except Exception as e:
+                        log(f"  learner.update failed: {e!r}")
+                rec["seconds"] = round(time.time() - t0, 2)
+                with open(run / "moves.jsonl", "a") as f:
+                    f.write(json.dumps(rec, default=str) + "\n")
+                ll, up = rec["llm"], rec.get("update") or {}
+                log(f"  {label} {rec['color']} {mv} [{summ['decision']['rule']}] {summ['sims']} sims, root_n "
+                    f"{summ['root_n']} (start {summ['root_n_start']}), q {summ['q']:.3f}"
+                    + (f"; llm ok {ll['ok']:.0f} failed {ll['failed']:.0f} ${ll['cost_usd']:.2f} (total "
+                       f"${ll['total_cost_usd']:.2f})" if ll else "")
+                    + (f"; update {up.get('version')} {'ACC' if up.get('accepted') else 'kept'} "
+                       f"ho {up.get('heldout_ce')}" if up else "") + f"; {rec['seconds']:.0f}s")
+            res = None
+            if eng.root_board.terminal:
+                sc = eng.root_board.score()
+                res = f"B+{sc:g}" if sc > 0 else f"W+{-sc:g}" if sc < 0 else "0"
+                if learner is not None:
+                    learner.observe_game(res, "B")          # one engine plays both colours
+            info = {"game": g, "start": starts[g % len(starts)], "first": first_color, "decisions": len(played),
+                    "result": res or "truncated", "seconds": round(time.time() - t_game),
+                    "cost_usd": None if svc is None else round(svc.stats()["cost_usd"], 2),
+                    "weights_end": None if learner is None else learner.current.version}
+            with open(gfile, "a") as f:
+                f.write(json.dumps(info) + "\n")
+            (run / f"game{g}.sgf").write_text(write_sgf(eng.root_board.size, eng.root_board.komi, played,
+                                                        black="mcts-hybrid", white="mcts-hybrid",
+                                                        result=res or "", event="hybrid-selfplay"))
+            log(f"game {g}: {info}")
+            last_stats = player._last_stats
+            player.close()
+    finally:
+        if svc is not None:
+            if heur is not None:      # the last decisions' heuristic jobs still run (nothing else is started)
+                svc.drop_queued(keep=("heuristic",))
+                t_end = time.time() + a.drain
+                while time.time() < t_end and (svc.stats()["queue"] or svc.stats()["running"]):
+                    time.sleep(1.0)
+            svc.close(wait_s=a.drain)
+            log(f"llm totals: {json.dumps(svc.stats())}")
+        if heur is not None:
+            heur.close(wait_s=max(600.0, a.drain))
+            log(f"heuristics: {json.dumps(heur.stats())}")
+        if learner is not None:
+            learner.close()
     return 0
 
 
@@ -626,6 +851,16 @@ def _common(p: argparse.ArgumentParser) -> None:
                    help="a top candidate has at least this share of the leader's visits")
     p.add_argument("--decide-extend", type=float, default=120.0,
                    help="extra search at most while the most-visited move waits for its model value")
+    # learning from model reasoning plus search (mcts-llm-hl)
+    p.add_argument("--heuristics", action="store_true",
+                   help="a heuristic job after each decision proposes rules / nudges (needs --learn; llm-search: "
+                        "uses the run's learner)")
+    p.add_argument("--heuristics-every", type=int, default=1, help="a heuristic job every N decisions")
+    p.add_argument("--heuristic-surprises", type=int, default=6, help="surprise positions per heuristic job")
+    p.add_argument("--heuristic-min-visits", type=int, default=2048, help="visits a surprise node needs at least")
+    p.add_argument("--heuristic-timeout", type=float, default=0.0, help="session timeout of heuristic jobs (0 = job's)")
+    p.add_argument("--hl-dir", default="", help="learning state directory (default <run>/hl; share it between runs)")
+    p.add_argument("--hl", action="append", metavar="KEY=VALUE", help="OnlineLearner option (mcts.hl DEFAULTS)")
 
 
 def add_parsers(sub) -> None:
@@ -657,6 +892,24 @@ def add_parsers(sub) -> None:
     p.add_argument("--calib-every", type=float, default=60.0, help="seconds of search between calibration refits")
     _common(p)
     p.set_defaults(fn=cmd_llm_search)
+
+    p = sub.add_parser("hybrid-selfplay", help="self-play with the model service, learning and heuristic jobs (no arena)")
+    p.add_argument("--games", type=int, default=1)
+    p.add_argument("--max-plies", type=int, default=16, help="decisions per game at most (then the game is truncated)")
+    p.add_argument("--time-per-move", type=float, default=240.0)
+    p.add_argument("--sims", type=int, default=None)
+    p.add_argument("--start", action="append", metavar="SPEC",
+                   help="start position of game i (cycled): 'empty' or 'FILE.sgf:N'")
+    p.add_argument("--komi", type=float, default=7.5)
+    p.add_argument("--llm", default="on", choices=["on", "off"])
+    p.add_argument("--learn", action="store_true")
+    p.add_argument("--no-abstract", action="store_true")
+    p.add_argument("--max-cost", type=float, default=0.0, help="stop starting decisions once the sessions cost this")
+    p.add_argument("--wait-for-model", type=float, default=6.0,
+                   help="hours to wait at most before a decision while the model sessions are paused for a rate / "
+                        "usage limit (0 = do not wait: searches then run without model input)")
+    _common(p)
+    p.set_defaults(fn=cmd_hybrid_selfplay)
 
 
 __all__ = ["Player", "play_games", "add_parsers", "check_threads", "root_table"]

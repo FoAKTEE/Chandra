@@ -134,6 +134,8 @@ class MockWorker(Worker):
                                {"scope": "global", "text": "(mock) keep groups connected before attacking"}]}
             if mv == "pass":
                 raw["lessons"] = raw["lessons"][1:]
+        elif k == "heuristic":
+            raw = _mock_heuristic(job, self.rng)
         elif k == "recall":
             raw = {"recognized": False}
         elif k == "consolidate":
@@ -148,6 +150,39 @@ class MockWorker(Worker):
             return JobResult(False, error=str(e), worker=self.name)
         return JobResult(True, res, worker=self.name, seconds=time.time() - t0,
                          usage={"input": len(job.prompt()) // 4, "output": 200})
+
+
+def _mock_heuristic(job: Job, rng: random.Random) -> dict:
+    """Mock heuristic answer: the colour-relative 5x5 shape around the preferred move of the first
+    surprise as a rule (weight +0.5), and a +0.1 nudge of the first adjustable weight."""
+    from .heurdsl import E, M, T, RuleError, _states, parse_answer
+    chars = {E: ".", M: "X", T: "O", 3: "#"}
+    rules = []
+    for sp in job.params.get("surprises") or []:
+        pref = [m for m in sp.get("preferred") or [] if m and m != "pass"]
+        if not pref:
+            continue
+        pos = Position.from_dict(sp["position"])
+        st = _states(pos, point(pref[0], pos.size))
+        rows = ["".join("*" if (y == 2 and x == 2) else chars[st[y * 5 + x]] for x in range(5)) for y in range(5)]
+        rules.append({"name": f"mock-shape-{str(sp['id']).lower()}", "text": f"(mock) the shape around the search's "
+                      f"preferred move in {sp['id']}", "pattern": rows, "weight": 0.5,
+                      "rationale": f"(mock) {sp['id']}: the search preferred this move", "evidence": [str(sp["id"])]})
+        if len(rules) >= 2:
+            break
+    targets = job.params.get("targets") or []
+    raw = {"analysis": "(mock) shapes around the preferred moves", "rules": rules,
+           "nudges": [{"feature": targets[0], "delta": 0.1, "rationale": "(mock) nudge"}] if targets else []}
+    sur = [Position.from_dict(x["position"]) for x in job.params.get("surprises") or []]
+    keep = []
+    for r in rules:                        # drop what the validator would refuse (e.g. over-broad, duplicate)
+        try:
+            parse_answer({"analysis": "", "rules": keep + [r], "nudges": []}, positions=sur or None)
+            keep.append(r)
+        except RuleError:
+            pass
+    raw["rules"] = keep
+    return raw
 
 
 # ------------------------------------------------------------------ API

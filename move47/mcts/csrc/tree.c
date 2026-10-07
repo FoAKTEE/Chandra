@@ -95,6 +95,7 @@ typedef struct {
        (model-proposed), 2 explore (unconventional / scout); root_ncls = number of classed moves */
     uint8_t root_cls[MC_MAXMOVES + 1];
     int32_t root_ncls;
+    MCRules* rules;          /* model-written rules for the priors (mcts-llm-hl); NULL or n = 0: none */
 } MCTree;
 
 typedef struct {
@@ -354,7 +355,9 @@ static int pm_cmp(const void* a, const void* b) {
 /* The caller moved state[node] NEW -> EXPANDING.  Computes the priors, allocates and writes the
    edges, publishes EXPANDED.  Returns 0 (state back to NEW) when the edge pool is full. */
 static int expand(MCTree* t, MCThread* th, int32_t node, const MCBoard* b) {
-    int nm = mc_all_logits(b, t->pol.w, t->pol.ladders_prior, th->moves, th->logits);
+    int nm = (t->rules && t->rules->n > 0)
+                 ? mc_all_logits_r(b, t->pol.w, t->pol.ladders_prior, t->rules, th->moves, th->logits)
+                 : mc_all_logits(b, t->pol.w, t->pol.ladders_prior, th->moves, th->logits);
     PM pm[MC_MAXMOVES];
     double mx = -1e300, z = 0;
     for (int i = 0; i < nm; i++)
@@ -616,6 +619,7 @@ void mc_tree_free(MCTree* t) {
     free(t->tt_key);
     free(t->tt_val);
     free(t->hist);
+    free(t->rules);
     free(t);
 }
 
@@ -694,6 +698,17 @@ int mc_tree_set_history(MCTree* t, const uint64_t* h, int n) {
 void mc_tree_set_policy(MCTree* t, const double* w, int nf, double t_playout, double t_prior, int lad_playout,
                         int lad_prior) {
     mc_policy_set(&t->pol, w, nf, t_playout, t_prior, lad_playout, lad_prior);
+}
+
+/* the rules the priors add (only while no search runs; n = 0 removes them); returns the count */
+int mc_tree_set_rules(MCTree* t, const int32_t* spec, int n, const double* w) {
+    if (n <= 0) {
+        if (t->rules) t->rules->n = 0;
+        return 0;
+    }
+    if (!t->rules) t->rules = calloc(1, sizeof(MCRules));
+    if (!t->rules) return -1;
+    return mc_rules_set(t->rules, spec, n, w);
 }
 
 void mc_tree_set_limits(MCTree* t, int64_t deadline_ns, int64_t sims_target) {

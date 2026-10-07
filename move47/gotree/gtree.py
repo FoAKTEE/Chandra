@@ -2,6 +2,8 @@
 
   gtree card | window P10 [--radius 4] | try P10 Q11 ... [--winrate 0.4] [--note ...]
   gtree ladder Q11 | known | lessons "<keywords>" | schema | submit result.json
+  gtree rule-test rules.json                      (heuristic jobs: check rules on the surprise positions)
+  card / window / try / ladder take --pos S2 in heuristic jobs (that surprise position instead of the root)
 
 Reads the job from $GTREE_JOB (default: current directory).  It never
 touches the search tree directly: explored lines go to tries.jsonl and the
@@ -29,20 +31,36 @@ def _job() -> tuple[Job, Path]:
     return Job.from_json(json.loads(f.read_text())), jd
 
 
+def _surprise(job: Job, sel: str):
+    """The position of surprise `sel` (S1, S2, ...) of a heuristic job."""
+    from .position import Position
+    for x in job.params.get("surprises") or []:
+        if str(x.get("id", "")).upper() == sel.strip().upper():
+            return Position.from_dict(x["position"])
+    ids = ", ".join(str(x.get("id")) for x in job.params.get("surprises") or []) or "none"
+    sys.exit(f"gtree: no surprise position {sel!r} in this job (have: {ids})")
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="gtree")
     sub = p.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("card")
+    c = sub.add_parser("card")
+    c.add_argument("--pos", default="", help="heuristic jobs: a surprise position (S1, S2, ...)")
     w = sub.add_parser("window")
     w.add_argument("center")
     w.add_argument("--radius", type=int, default=4)
+    w.add_argument("--pos", default="")
     t = sub.add_parser("try")
     t.add_argument("moves", nargs="+")
     t.add_argument("--winrate", type=float, default=None,
                    help="your estimate, at the end of the line, that the side to move NOW wins")
     t.add_argument("--note", default="")
+    t.add_argument("--pos", default="")
     l = sub.add_parser("ladder")
     l.add_argument("point")
+    l.add_argument("--pos", default="")
+    rt = sub.add_parser("rule-test")
+    rt.add_argument("file", help="JSON: one rule, a list of rules, or a whole heuristic answer ('-' = stdin)")
     sub.add_parser("known")
     s = sub.add_parser("lessons")
     s.add_argument("query")
@@ -52,9 +70,12 @@ def main(argv=None) -> int:
     a = p.parse_args(argv)
     job, jd = _job()
     pos = job.pos
+    sel = getattr(a, "pos", "")
+    if sel:
+        pos = _surprise(job, sel)
 
     if a.cmd == "card":
-        print(position_card(pos, title=job.params.get("title", "Position")))
+        print(position_card(pos, title=sel.upper() if sel else job.params.get("title", "Position")))
     elif a.cmd == "window":
         try:
             print(window(pos, point(a.center, pos.size), a.radius))
@@ -65,7 +86,7 @@ def main(argv=None) -> int:
         moves = [m for m in a.moves if m.strip()]
         out, pts = tool_try(pos, moves)
         print(out)
-        if pts:
+        if pts and not sel:
             with open(jd / "tries.jsonl", "a") as f:
                 f.write(json.dumps({"moves": pts, "winrate": a.winrate, "note": a.note[:300]}) + "\n")
     elif a.cmd == "ladder":
@@ -90,6 +111,14 @@ def main(argv=None) -> int:
             rows = Memory(mem_path, readonly=True).search(a.query)
             print("\n".join(f"[{'G' if r['scope'] == 'global' else 'L'}{r['id']}] {r['text']}" for r in rows)
                   or "(no matches)")
+    elif a.cmd == "rule-test":
+        from .heurdsl import rule_test_report
+        try:
+            raw = json.loads(sys.stdin.read() if a.file == "-" else Path(a.file).read_text())
+        except (OSError, json.JSONDecodeError) as e:
+            print(f"INVALID: cannot read JSON ({e})")
+            return 2
+        print(rule_test_report(raw, job.params.get("surprises") or [], job.params.get("targets")))
     elif a.cmd == "schema":
         print(json.dumps(SCHEMAS[job.kind], indent=1))
         print("Example:")
@@ -110,6 +139,8 @@ def main(argv=None) -> int:
         print("OK" + (f" (ignored: {'; '.join(warn[:5])})" if warn else ""))
         if job.kind in ("expand", "more", "refute"):
             print("accepted moves: " + ", ".join(coord(c["move"], pos.size) for c in res["candidates"]))
+        elif job.kind == "heuristic":
+            print(f"accepted: {len(res['rules'])} rule(s), {len(res['nudges'])} nudge(s)")
     return 0
 
 

@@ -141,6 +141,15 @@ _SIGS = {
     "mc_tree_rearm": (_I, [_P, ctypes.c_int32]),
     "mc_tree_set_root_cls": (_I, [_P, _P, _P, _I]),
     "mc_ev_path_max": (_I, []),
+    # rules (mcts-llm-hl)
+    "mc_rules_new": (_P, []),
+    "mc_rules_free": (None, [_P]),
+    "mc_rules_load": (_I, [_P, _P, _I, _P]),
+    "mc_rule_ints": (_I, []),
+    "mc_max_rules": (_I, []),
+    "mcb_rule_hits": (_I, [_P, _P, _P, _I, _P, _P, _I]),
+    "mcb_logits_r": (_I, [_P, _P, _I, _P, _P, _P]),
+    "mc_tree_set_rules": (_I, [_P, _P, _I, _P]),
 }
 
 
@@ -165,3 +174,5 @@ BOARD_BYTES = plib.mc_board_sizeof()
 N_PATTERNS = plib.mc_n_patterns()
 N_FEATURES = plib.mc_n_features()
 EV_PATH_MAX = plib.mc_ev_path_max()
+RULE_INTS = plib.mc_rule_ints()
+MAX_RULES = plib.mc_max_rules()

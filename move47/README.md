@@ -634,3 +634,136 @@ Tests (no GPU, no model): `tests/test_judge_position.py` (the judge on `tests/fa
 best lead minus lead after, illegal and bad moves), `tests/test_ablation_driver.py` (two streams against two
 in-process arenas share one learner: one update sequence over both streams' decisions, colours, tokens kept out
 of the segment metadata; the report reads the run back), `tests/test_arena_profiles.py` (above).
+
+## MCTS v2: learning from model reasoning plus search (node `move47::mcts-llm-hl`)
+
+MISSION.md section 5, principle paragraph: we do not train an MCTS from scratch. The model proposes
+candidates, values and lessons; the search tests them over millions of simulations; the learner distils what
+the combined search agrees on into explicit heuristics (weights, and readable rules the model writes) that guide
+the next searches, game after game. The code-only learner of `move47::mcts-hl` is kept as the ablation.
+
+```bash
+# hybrid self-play with the full loop (no arena needed): model expansion, learning, a heuristic job per decision
+python3 -m mcts hybrid-selfplay --run <dir outside Chandra> --games 3 --max-plies 18 \
+    --start empty --start game.sgf:16 --time-per-move 210 --threads 20 --llm-workers 16 \
+    --worker <Opus 5.5 xhigh spec, as above> --wrap "$PWD/bin/worker-sandbox {jobdir}" \
+    --learn --heuristics [--hl-dir <shared learning state>] [--hl KEY=VALUE] [--max-cost USD]
+# the same loop in arena games and on one position
+python3 -m mcts play ... --learn --heuristics
+python3 -m mcts llm-search ... --heuristics            # one heuristic job after the decision
+python3 -m mcts hl-hybrid-report --run <dir> --code-search 200     # the evidence tables below
+python3 -m mcts hl-book --dir <dir>/hl                              # the heuristics book as markdown
+```
+
+| part | where | what |
+|---|---|---|
+| hybrid targets | `hl/learner.py` (e), `tree.py` | samples observed while the model service feeds the search carry `hy` (and `xp` when the node itself has model priors); with `hybrid` on (default) the held-out split used by every gate keeps only hybrid samples once there are `min_heldout`. Play loops with the model on add a **test split** (`test_frac` 0.1, a second independent hash of the node key) that no fit and no gate ever sees; reports measure on it. `hybrid=False` (or `--llm off`) is the code-only path. |
+| distillation | `hl/learner.py` (f) | at nodes the model evaluated (`observe_external`, the latest per node) the prior is also fitted to the model's candidate priors, as a second CE term with relative weight λ; λ is chosen from `distill_grid` (0, 0.1, 0.3, 1, 3) every `distill_every` (5) updates by held-out CE on the hybrid visit targets (so the model's knowledge only enters as far as it helps predict what the combined search concludes). `model_agreement()` reports the learned prior against the model's priors at held-out (or test) evaluated nodes: CE, top-1, mass on the model's moves, rank of its top move. The model's calibrated values are also soft labels of the value model (b) (`ext_value_weight`). |
+| rule language | `gotree/heurdsl.py` | colour-relative 5x5 / 3x3 patterns with wildcards (own, opponent, empty, off-board, not-own, not-opponent, any stone, on-board, anything), matched in all 8 orientations, plus conditions: captures, liberties after the move, atari, self-atari, escape, ladder capture, failing ladder escape, an adjacent own / opponent chain with given liberties and size, line, distance to the last move. Pure Python (it runs in the worker sandbox); strict: unknown fields or conditions, bad characters, a misplaced move cell, weights outside ±[0.05, 3], fewer than 2 constrained cells (counting 2 per condition), or matching more than 20% of the legal moves of the job's surprise positions are refused with a message the worker can act on. Nothing a model writes is executed. |
+| rules in the prior | `mcts/rules.py`, `csrc/rules.c`, `weights.py`, `features.py`, `tree.py` | FEATURES.md section "Model-written rules": compiled masks and bounds, added to the tree priors at expansion only; a weight file carries its rules; `move_logits` / guards / regression metrics use them too. |
+| heuristic job | `gotree/jobs.py` kind `heuristic`, `gotree/gtree.py`, `hl/heuristics.py` | after each decision (or every `--heuristics-every`), `HeuristicLoop.after_decision` takes the well-visited nodes (at least `--heuristic-min-visits`, 2048) of the decision's search and ranks them by KL(final visits ‖ learned prior) and, at nodes the model evaluated, KL(visits ‖ model prior), weighted by sqrt(visits / 20 000), one per canonical position; the top 6 become surprises S1..S6: position card, the moves by visits with winrate, learned prior and rank, model prior and rank, the book rules matching them, the learned prior's and the model's preferred moves, the main line. With them the job gets the lessons that apply (L1 shapes near the preferred moves, L2 principles) and the book (active rules with weight now / proposed, held-out gain, hits and provenance; the last 12 rejected proposals with their reasons; the adjustable tactical weights). Tools: `gtree card/window/try/ladder --pos S2`, `gtree rule-test rules.json` (where each rule matches in every surprise, the preferred moves starred, the share of legal moves), `gtree submit`. Output: up to 4 rules (name, readable text, pattern, conditions, weight, rationale, evidence, lessons cited) and 6 nudges (feature or rule, delta ≤ 1, rationale). |
+| gate | `OnlineLearner.consider` | nudges: the nudged weights against the current ones on the held-out hybrid targets (no refit); kept if CE falls by more than 1e-4 nats and guards and regression set pass; an accepted nudge also shifts its feature's anchor. Rules: refused without a fit if they duplicate a book rule or repeat a rejected one, if the book is full (48), if they match more than 20% of the legal moves of 600 training positions, or nothing in them. Otherwise the current weights plus the rule, with only the rule's weight fitted (from the model's weight; all others frozen; same training objective incl. distillation), against the current weights on the held-out targets: kept if the gain exceeds 1e-4 nats, the lower end of a 90% bootstrap interval (over searches once there are 5, else over nodes) is above 0, the rule matches at least 5 held-out positions from 2 searches, the tactical guards hold and the regression set does not get worse (the mcts-hl tolerances). Several kept rules from one job are fitted together and kept together if that is no worse than the best one alone. An accepted rule's model weight becomes its anchor; the next `update()` refits all weights jointly. |
+| book | `hl/book.py` | `heuristics-book.json` (+ `book/book-vNNN.json` per change, `heuristics-book.md`): each rule with its text, pattern, conditions, the model's rationale, provenance (job id, decision label, surprise ids and positions, lessons cited), weight history (proposed, then each refit that moved it), held-out effect at acceptance (CE without / with, gain and interval, gain at the model's own weight), hit counts in the learner's samples (positions, moves, top-move hits, visit share of matched moves, held-out positions); every proposal with status and reason; accepted nudges; lessons -> rules. The other direction is in the lesson memory (`memory.db`, table `lesson_rules`). |
+| play loop | `play.py`, `llm.py` | `--learn` with the model on puts the learner in hybrid mode; `--heuristics` builds the loop: the job is queued on the same service (priority of root breadth, kept across new roots and games like `abstract`), runs like any session, and its validated answer is gated by a background thread while the next search runs (update and gate never interleave: one fit lock). The learning state (`<run>/hl` or `--hl-dir`) carries across moves, games and runs; `hybrid-selfplay` plays both sides with one tree per game. Records: `moves.jsonl` (per decision: the heuristic request with its surprises, the update with held-out CE, λ and model agreement, the session cost), `heuristics.jsonl` (requests and gate reports), `hl/proposals.jsonl`, `llm-jobs.jsonl` (kind `heuristic`). |
+| several processes | `hl/learner.py` | one learner dir may be shared by several processes (e.g. `--hl-dir`): a version is committed under the file lock after re-reading `state.json`; if another process committed a version while this fit ran, the candidate is dropped as superseded (it was gated against an older parent) instead of overwriting; version files are created exclusively (`os.link`, never replaced); every state save first adopts the newer state on disk; writers of the book are serialised by `.gate.lock`. |
+| usage limits | `llm.py`, `play.py` | a session's `rate_limit_event` (status rejected, `resetsAt`) and "session limit" texts classify as rate limits with their reset time, so dispatching pauses until the reset; `hybrid-selfplay` waits before a decision while the service is paused for a limit (`--wait-for-model`, 6 h) instead of searching without model input, and records `model_input` / `waited_for_model_s` per decision. |
+| move time | `tree.py` | `search(time_s)` counts from its entry, so an eviction at the start of a search is part of the move's time; a mid-search eviction runs only if the remaining time exceeds 1.5x the last eviction's duration, otherwise the search goes on without storing new leaves (frozen) until the deadline and the next search evicts first. The result reports `gc_s` and `wall_s`. (Ablation run: 87 of 383 moves at 30 s took longer than 31 s, up to 59 s.) |
+
+**Evidence** (2026-10-07, run dir `runs/move47/mcts-llm-hl-20261007/` next to the Chandra checkout: launch scripts
+`run-hybrid.sh` (game 0) and `run-hybrid2.sh` (games 1-2), `rollback_modelless.py`, `bench_book.py`; the report
+`hybrid/hl-hybrid-report.{md,json}` from `python3 -m mcts hl-hybrid-report --run hybrid --code-search 200`).
+Hybrid self-play, 3 games of 18 decisions from the empty board, the pilot game after 16 plies and the
+`mcts bench` midgame after 10 moves; 210 s of search per decision at 20 threads (median 12.5M, 19.2M and 18.8M
+simulations per decision in games 0, 1, 2), sandboxed Opus 5.5 xhigh with W=16, a heuristic job after every
+decision, one learning state for all three games. Sessions: 1 124 in the run (974 expand, 51 refute, 48 lessons,
+51 heuristic jobs: median 255 s, 0.90 USD on average), 526.76 USD; with the 2-decision smoke (7.57 USD) and a first
+attempt stopped after 5 decisions to fix a gate rule (38.59 USD, plus at most about 5 USD of sessions killed in
+flight) 572.92 USD logged.
+
+The workers' account hit its five-hour limit during game 0 (10:52): g0p16-g0p18 and six decisions of a first game 1
+ran without any model session. The learning state was rolled back to the last decision with model input
+(`hybrid/aborted-modelless/MANIFEST.json`: versions hl-v023-v025, 9 updates and the samples of those decisions
+moved there; the three model-less decisions stay in game 0's record), the usage-limit handling above was added,
+and games 1-2 were played from the rolled-back state (6 code files changed between the two parts, listed in
+`code-sha256.txt` / `code-sha256-part2.txt`; the gate's logic did not change). When the new account's window ran
+out at 14:19, the service paused until its reset and the loop waited 377 s before g2p9 instead of searching
+without the model. In all, 51 decisions had model input.
+
+*Proposals.* 48 heuristic jobs (12, 18 and 18 in games 0, 1, 2) proposed 114 rules and 31 nudges; 10 rules and
+5 nudges were kept (game 0: 4 of 27 rules, 3 of 6 nudges; game 1: 3 of 44, 1 of 12; game 2: 3 of 43, 1 of 13).
+Rejections: 104 rules whose held-out gain or its interval was too small, 2 with too few held-out matches (left
+re-proposable), 1 repeat of a rejected rule, 26 nudges without held-out gain. No rule failed the guards or the
+regression set; the validator at submit time refused over-broad rules, so none reached the gate. 13 links from
+11 lessons to rules (the abstract jobs wrote 153 lessons).
+
+| rule (job, decision) | the model's text | weight: proposed -> now | held-out gain at acceptance (90% CI) |
+|---|---|---|---|
+| R4 descend-past-parallel-pair-when-short-of-libs (g0p10) | when your two-stone line runs beside an opponent two-stone line toward the edge and your chain has two or three liberties, descend to the second line just past the end of their line to win the liberty race | +1.00 -> +0.70 | +0.0063 (+0.0012 .. +0.0119) |
+| R5 extend-at-head-of-own-two-vs-contact (g1p1) | extend at the head of your two-stone line when an opponent stone already touches that point; otherwise they hane at the head of your two stones (cites L17, G18) | +0.90 -> +0.56 | +0.0024 (+0.0005 .. +0.0046) |
+| R6 save-lone-armpit-stone (g1p8) | extending your lone 2-liberty stone out of the armpit of the opponent's connected bend is usually slow and heavy (cites G57, L59, L62) | -1.00 -> -0.85 | +0.0025 (+0.0002 .. +0.0046) |
+| R9 slow-capture-of-abandoned-edge-stones (g2p16) | capturing 1-3 opponent edge stones they left in atari while playing elsewhere is usually slow; take the vital or big point first | -1.00 -> -0.71 | +0.0013 (+0.0004 .. +0.0022) |
+| R1, R2 (g0p2, g0p3) | the third-line knight's move from a lone opponent stone in open space | +0.60 -> +0.64, +1.00 -> +0.34 | +0.0021, +0.0006 |
+| R3 atari-on-runaway-lone-stone (g0p5) | ataris on a lone two-liberty stone that escapes the ladder usually just help it run | **-0.60 -> +0.57** | +0.0006 |
+| R10 fill-own-knight-link-gap-in-centre (g2p18) | fill the gap of your own knight's-move link before they wedge | **+0.60 -> -0.14** | +0.0003 |
+
+R3 and R10 kept their place as features but with the opposite sign: the search does not support what their
+text says, and the book and the report flag it. At the model's own weight (no fit), 5 of the 10 kept rules
+improved the held-out CE and 5 made it worse; the gate keeps a rule for what it identifies, with the weight the
+data supports. The full book: `hybrid/hl/heuristics-book.md`.
+
+*Prediction of the hybrid search on the test split* (3 391 nodes and 69 model evaluations whose keys no fit and no
+gate ever used; paired differences with 95% cluster-bootstrap intervals over the 51 searches):
+
+| weights | test CE | test top-1 | CE to the model's priors | top-1 vs model | mass on the model's moves | regression CE | guards |
+|---|---|---|---|---|---|---|---|
+| default-v1 (start) | 2.985 | 0.338 | 3.314 | 0.174 | 0.282 | 2.682 | pass |
+| hl-v022 (end of game 0's model input) | 2.850 | 0.364 | 2.961 | 0.290 | 0.410 | 2.693 | pass |
+| hl-v044 (end of game 1) | 2.619 | 0.408 | 2.927 | 0.203 | 0.433 | 2.640 | pass |
+| hl-v065 (final: 10 rules, 5 nudges, online refits) | 2.581 | 0.419 | 2.898 | 0.217 | 0.451 | 2.655 | pass |
+| refit on the final data with the rules | 2.580 | 0.411 | 2.780 | 0.304 | 0.469 | 2.677 | pass |
+| the same refit without the rules | 2.592 | 0.410 | 2.822 | 0.304 | 0.458 | 2.660 | pass |
+| the same refit without distillation | 2.580 | 0.416 | 2.900 | 0.188 | 0.452 | 2.655 | pass |
+
+- final vs default-v1: +0.404 nats [+0.366, +0.445] on the hybrid targets; +0.416 [+0.333, +0.495] toward the model's priors.
+- the book's rules: refit with vs without them +0.012 [+0.007, +0.018]; final vs the refit without rules +0.011 [+0.004, +0.018].
+- distillation (λ chosen 11 times: 0 nine times, 0.1 twice; the final λ 0.1): +0.00002 [-0.0025, +0.0026] on the hybrid
+  targets, +0.120 [+0.049, +0.209] toward the model's priors at test nodes the model evaluated.
+- the online gate: 51 updates, 27 policy refits accepted (2, 11, 14 in games 0, 1, 2), 21 refused by the regression
+  set (13, 7, 1: game 0's hybrid refits moved the prior away from the code-only regression targets by 0.02-0.11
+  nats; later most refits passed and the regression CE ended below default-v1's), 3 without held-out gain.
+
+*Code-only search on held-out positions* (200 test nodes with at least 20 000 visits, 100 000 simulations, 16 threads,
+no model): agreement of the most-visited move with the hybrid search's: default-v1 0.425 (95% 0.359-0.494), final
+0.425, the refit without rules 0.415, the refit with rules 0.460; differences +0.000 [-0.075, +0.075] (final vs
+default-v1) and +0.045 [-0.025, +0.115] (refit with vs without rules). The learned heuristics predict the hybrid
+search much better, but at this sample size they do not measurably change which move a code-only search picks.
+
+*Cost of the rules in the hot loop* (`bench_book.py`, the 9x9 midgame, 16 threads, median of 5 interleaved 5 s runs):
+the final book (10 rules) 92 234 vs 94 468 simulations/s without its rules (-2.4%); 17.9 vs 12.4 µs per expansion
+(expansions 5.8% vs 4.1% of the threads' time). With the 4-rule book of game 0: -1.0%.
+
+Tests (no model): `python3 -m pytest -q tests/test_mcts_llm_hl.py -p no:cacheprovider` (18, about 50 s): the rule
+language (patterns in all orientations and both colours, conditions equal to the C features incl. ladders, the C and
+Python matchers agree on random rules and positions); refusal of malformed, unsafe (unknown fields, code), over-broad
+and out-of-range proposals at submit; the gate (a predictive rule kept with its book entry, provenance, weight
+history, effect, hits, lesson links and markdown; a useless, an over-broad, an unseen and a guard-breaking rule
+refused; nudges; too little evidence stays re-proposable); distillation (λ chosen by held-out fit raises agreement
+with the model's priors); rules in the tree priors and not in playouts; `gtree rule-test / card --pos / submit`; the
+heuristic loop with lesson links; `hybrid-selfplay` and the arena loop with a mock worker and the report; two
+processes on one learner dir (an unbroken version chain, superseded fits dropped); usage-limit reset parsing and
+the wait; a full tree does not stretch a move.
+
+Not done here:
+- [HOLE] Whether the learned heuristics make the system stronger is not shown: the test split measures prediction of
+  the hybrid search (from the same 3 games), and code-only search with them agrees with the hybrid choices no more
+  often (200 positions). Strength is node `move47::mcts-strength`.
+- [HOLE] The code-only regression set refused 13 of game 0's 15 hybrid refits; the trade-off is visible (the
+  unrefused refit of the final data has regression CE 2.677 vs 2.655) but a regression set built from hybrid
+  searches does not exist yet.
+- [HOLE] Distillation chose λ = 0 nine times of eleven: the model's priors at evaluated nodes do not help predict
+  the hybrid search's visits beyond the visits themselves; they only raise agreement with the model.
+- Two of ten kept rules work against their own text (R3, R10); the gate accepts a rule as a feature whatever its
+  fitted sign and only flags it.
+- [FUTURE] Rules only in the tree prior: a rule feature in playouts, retiring rules whose weight stays near 0, and
+  sharing one learning state between concurrent runs beyond the version commit (each process fits on its own
+  samples).

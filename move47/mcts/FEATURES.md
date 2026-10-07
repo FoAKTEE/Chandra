@@ -135,3 +135,25 @@ features(b, "D4")                           # -> [pattern index, ..., line index
 move_logits(b, load_default())              # -> {point or None: logit} for every legal move
 move_priors(b, load_default(), temperature=1.0)
 ```
+
+## Model-written rules (node `move47::mcts-llm-hl`)
+
+Besides the 1148 fixed features, a weights version may carry **rules**: move heuristics written by the
+model in heuristic jobs, in the small language of `gotree/heurdsl.py`, and kept by the learner only when
+they improve its prediction of held-out hybrid-search targets (README, section on learning from model
+reasoning plus search). The feature spec (`spec_id`) does not change; a weight file lists its rules under
+`"rules"` (see `mcts/weights.py`), and `Weights.full` is the feature weights followed by one weight per rule.
+
+| part | definition |
+|---|---|
+| pattern | a colour-relative 5x5 (or 3x3) grid around the move, cells `X` own, `O` opponent, `.` empty, `#` off-board, `x` not own, `o` not opponent, `s` any stone, `+` on the board, `?` anything, `*` the move; it matches in any of the 8 orientations |
+| conditions | `captures`, `libs_after` (4 = 4+), `atari`, `self_atari`, `escape`, `ladder_capture`, `ladder_escape_fails` (the definitions above), `adj_opp` / `adj_own` (an adjacent chain with given liberties and size, before the move), `line`, `dist_last` (the distance above, exact) |
+| effect | the weights of all matching rules are added to the move's logit in the **tree priors** (expansion, `csrc/rules.c` `mc_all_logits_r`; `mcts.features.move_logits` does the same in Python); playouts never use rules |
+| compilation | `mcts/rules.py`: per distinct orientation four 25-bit masks (cells where empty / own / opponent / off-board is not allowed) and integer bounds; per rule a bitset of the canonical 3x3 pattern indices its centre allows, tested first with the move's pattern index (already computed for the features), so most rules reject most moves with one bit test; tactics and ladder readings are computed once per move and only when a rule asks for them |
+| reference | `gotree.heurdsl.CompiledRule` matches in pure Python (it runs inside the worker sandbox for `gtree rule-test` and `gtree submit`); tests check that it and the C matcher agree on random rules and positions, and that its tactics equal the C features |
+
+Cost (host anta, 2026-10-07, the 9x9 midgame of `mcts bench`, other users' load 70-110 of 144 threads; per
+expansion, all legal moves, min of 7 interleaved runs): 13.0 µs without rules, 15.2 / 17.6 / 23.8 / 34.6 µs with
+1 / 4 / 16 / 60 random rules (random patterns with many wildcards are the prefilter's worst case). In the
+search, expansions take 3.5-4% of the threads' time without rules; the measured cost of the evidence run's own
+book is in the README.

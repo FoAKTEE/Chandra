@@ -17,6 +17,9 @@ Kinds:
   decide    pick the move to play from the root summary
   abstract  distil the finished search into reusable lessons
   recall    contamination probe: does the model recognise the position?
+  heuristic read a finished search's surprises, the lessons and the current heuristics book of
+            the MCTS v2 learner and propose explicit rules (gotree.heurdsl) or weight nudges
+            (node move47::mcts-llm-hl)
 """
 from __future__ import annotations
 
@@ -28,7 +31,7 @@ from typing import Any, Optional
 from .perception import position_card
 from .position import BLACK, IllegalMove, Position, coord, point
 
-KINDS = ("expand", "more", "refute", "rollout", "decide", "abstract", "recall", "consolidate")
+KINDS = ("expand", "more", "refute", "rollout", "decide", "abstract", "recall", "consolidate", "heuristic")
 
 ROLE = """You are one worker inside a tree search that is trying to find the strongest move in a game of Go.
 You are shown ONE frozen position. How it arose does not matter: only the stones, whose turn it is, the
@@ -136,6 +139,37 @@ EXAMPLES["consolidate"] = {"merge": [{"keep": "G3", "retire": ["G7"], "text": "m
                            "concepts": [{"text": "a more general principle", "children": ["G3", "L5"]}],
                            "contradictions": [{"a": "G2", "b": "G9", "note": "..."}], "retire": ["L4"]}
 
+# heuristic jobs (move47::mcts-llm-hl): explicit rules in the gotree.heurdsl language, weight nudges
+_RANGE = {"oneOf": [{"type": "integer"}, {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2}]}
+_CHAIN = {"type": "object", "properties": {"libs": _RANGE, "size": _RANGE}}
+SCHEMAS["heuristic"] = {"type": "object", "properties": {
+    "analysis": {"type": "string", "description": "what the surprises have in common (at most 2000 characters)"},
+    "rules": {"type": "array", "maxItems": 4, "items": {"type": "object", "properties": {
+        "name": {"type": "string"}, "text": {"type": "string"},
+        "pattern": {"type": "array", "items": {"type": "string"}, "description": "3 or 5 rows; '*' = the move"},
+        "conditions": {"type": "object", "properties": {
+            "captures": _RANGE, "libs_after": _RANGE, "line": _RANGE, "dist_last": _RANGE,
+            "atari": {"type": "boolean"}, "self_atari": {"type": "boolean"}, "escape": {"type": "boolean"},
+            "ladder_capture": {"type": "boolean"}, "ladder_escape_fails": {"type": "boolean"},
+            "adj_opp": _CHAIN, "adj_own": _CHAIN}},
+        "weight": {"type": "number"}, "rationale": {"type": "string"},
+        "evidence": {"type": "array", "items": {"type": "string"}},
+        "lessons": {"type": "array", "items": {"type": "string"}}},
+        "required": ["name", "text", "pattern", "weight", "rationale"]}},
+    "nudges": {"type": "array", "maxItems": 6, "items": {"type": "object", "properties": {
+        "feature": {"type": "string"}, "delta": {"type": "number"}, "rationale": {"type": "string"},
+        "evidence": {"type": "array", "items": {"type": "string"}}}, "required": ["feature", "delta", "rationale"]}}},
+    "required": ["analysis", "rules", "nudges"]}
+EXAMPLES["heuristic"] = {
+    "analysis": "In S1 and S3 the search preferred extending a stone in atari along the second line ...",
+    "rules": [{"name": "block-the-two-stone-hane", "text": "Block directly when the opponent hanes at the head of "
+               "your two stones and the block gives atari", "pattern": ["?????", "?.O.?", "?X*.?", "?X..?", "?????"],
+               "conditions": {"atari": True, "self_atari": False}, "weight": 0.8,
+               "rationale": "S1 and S3: the block was the search's top move but the prior ranked it 9th and 14th",
+               "evidence": ["S1", "S3"], "lessons": ["L4"]}],
+    "nudges": [{"feature": "atari:size1", "delta": 0.3, "rationale": "S2, S4: ataris on single stones were "
+                "consistently under-rated", "evidence": ["S2", "S4"]}]}
+
 
 @dataclass
 class Job:
@@ -150,6 +184,20 @@ class Job:
 
     def prompt(self, tools: str = TOOLS_CLI) -> str:
         p = self.params
+        if self.kind == "heuristic":
+            from .heurdsl import __doc__ as dsl_doc
+            lang = dsl_doc.split("A rule describes the moves it applies to:", 1)[-1].split("The tactical terms", 1)[0]
+            parts = [HEURISTIC_ROLE, "", "=== SURPRISES OF THE LAST SEARCH ===", self.context]
+            if self.memory:
+                parts += ["", "=== LESSONS (memory L1 / L2) ===", self.memory]
+            parts += ["", "=== THE HEURISTICS BOOK AND THE ADJUSTABLE WEIGHTS ===", p.get("book_text", "(empty)"),
+                      "", "=== YOUR JOB ===", TASKS["heuristic"].format(rules=p.get("max_rules", 4),
+                                                                         nudges=p.get("max_nudges", 6)),
+                      "", "=== THE RULE LANGUAGE ===", "A rule describes the moves it applies to:" + lang.rstrip(),
+                      "", TOOLS_HEURISTIC, "",
+                      "=== OUTPUT (JSON) ===", "Schema:", json.dumps(SCHEMAS["heuristic"]), "Example:",
+                      json.dumps(EXAMPLES["heuristic"])]
+            return "\n".join(parts)
         me = "Black (X)" if self.pos.to_play == BLACK else "White (O)"
         card = position_card(self.pos, title=p.get("title", "Position"), history=p.get("history"))
         region = ""
@@ -188,6 +236,28 @@ class Job:
 CONSOLIDATE_ROLE = """You maintain the long-term memory of a Go-playing search system: a set of lessons (G = global
 principles, L = local shape lessons) written after earlier searches. Memory must stay small, non-redundant and
 organised as a hierarchy of concepts, so that the right lesson is retrieved at the right time."""
+
+HEURISTIC_ROLE = """You improve the fast move intuition of a Go-playing search system. The system combines model
+reasoning with a large Monte Carlo tree search: model workers propose candidate moves with priors and values at
+selected positions, and the search tests them over millions of simulations. Every one of those simulations
+expands positions using a learned prior: a weighted sum of simple move features (3x3 shapes, captures, ataris,
+ladders, distance to the last move, line) plus explicit RULES written by workers like you. The rules are the
+system's readable heuristics; a learner refits their weights to what the search concludes, and a rule is kept
+only if it makes the prior predict the search's own conclusions better on positions it was not fitted on.
+Your answer is parsed by code: follow the output schema and the rule language exactly; coordinates as printed
+on each board (columns skip the letter I)."""
+
+TOOLS_HEURISTIC = """Tools (shell commands in this directory):
+  gtree card --pos S2              the position card of surprise S2 (without --pos: the root position)
+  gtree window C4 --pos S2         zoomed view around a point of S2
+  gtree try C4 D5 ... --pos S2     play a sequence from S2 and show the result
+  gtree ladder C4 --pos S2         ladder status of the chain at C4 in S2
+  gtree lessons "<keywords>"       search stored lessons
+  gtree rule-test rules.json       check rules (one rule, a list, or your whole answer): parse errors, and the
+                                   points where each rule matches in every surprise position, with the share of
+                                   legal moves it matches (over-broad above 20%)
+  gtree schema                     the exact output format with an example
+  gtree submit result.json         validate and submit your answer (resubmit until it prints OK)"""
 
 TASKS = {
     "expand": """You are {me}'s policy and value function at this position.
@@ -232,6 +302,24 @@ generalizes, refines or contradicts them.""",
 - contradictions: pairs of lessons that disagree (both stay, the link warns future readers);
 - retire: lessons that are wrong or useless given the evidence counts.
 Be conservative: only merge true duplicates and only retire clearly bad lessons.""",
+    "heuristic": """HEURISTIC JOB. Read the surprises above: positions from the last search where the final visit
+distribution (what the combined search concluded) disagreed most with the learned prior, and/or with the model
+workers' own priors. For each you see the search's preferred moves with visits and winrates, what the learned
+prior and the model preferred instead, and the main line.
+1. Find what several surprises have in common that a local rule could capture: a shape plus tactical
+   conditions that makes a move better (or worse) than the prior thinks. Prefer rules supported by two or more
+   surprises; a rule that fits only one position rarely helps on positions it was not fitted on.
+2. rules: up to {rules} NEW rules in the rule language below, each with a weight (the logit added to a matching
+   move's prior: +1 roughly multiplies its prior by e, negative weights discourage), a one-sentence `text` a
+   person can read, a `rationale` citing the surprises (S1, S2, ...) and the lessons (L.., G..) that support it.
+   Do not repeat a rule of the book or one listed as rejected unless you change what it matches.
+3. nudges: up to {nudges} changes (delta, at most 1.0 in size) to the weight of an existing feature or book rule
+   from the list of adjustable weights, when the surprises show it is systematically too high or too low.
+4. analysis: a short account of what you saw.
+Check every rule with `gtree rule-test` before submitting: it must match the moves you mean (marked *) and stay
+narrow; a rule that matches more than 20% of the legal moves is refused as over-broad. An empty rules list is a
+valid answer when the surprises show nothing general. Spend a few minutes; read short sequences with the tools
+when the reason for a surprise is tactical.""",
     "recall": """MEMORY CHECK. Do you recognise this exact position from a famous game (possibly rotated or
 mirrored)? If yes, name the game and the move that was famously played next, in THIS board's coordinates.
 Do not guess: answer recognized=false unless you are confident.""",
@@ -365,6 +453,13 @@ def validate(job: Job, r: Any) -> dict:
                   for c in (r.get("contradictions") or []) if isinstance(c, dict) and ids([c.get("a"), c.get("b")]) and
                   len(ids([c.get("a"), c.get("b")])) == 2]
         return {"merge": merge, "concepts": concepts, "contradictions": contra, "retire": ids(r.get("retire"))}
+    if k == "heuristic":
+        from .heurdsl import RuleError, parse_answer
+        sur = [Position.from_dict(x["position"]) for x in (job.params.get("surprises") or []) if x.get("position")]
+        try:
+            return parse_answer(r, targets=job.params.get("targets"), positions=sur or None)
+        except RuleError as e:
+            raise InvalidResult(str(e))
     if k == "recall":
         return {"recognized": bool(r.get("recognized")), "source": str(r.get("source", ""))[:300],
                 "famous_move": str(r.get("famous_move", ""))[:10]}

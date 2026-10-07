@@ -25,6 +25,11 @@ without a model value of their own get the top priority (``boost``), also at dec
 (``MCTS.rearm``) once the queue has room and the node is in the root's subtree again
 (``MCTS.in_subtree``, exact for any move order), so the node asks again on its next visit.
 
+Heuristic jobs (node move47::mcts-llm-hl): ``request_heuristic`` queues a ``heuristic`` session
+(gotree.jobs) prepared by mcts.hl.heuristics.HeuristicLoop after a decision; like ``abstract`` it
+has no engine targets and survives new roots and games; its validated answer goes to
+``on_heuristic(result, job, request, usage)`` (the loop gates it with the learner).
+
 Failures (rate limits, overload, sessions that end without an answer, timeouts) are classified
 from the JobResult and the session log; rate limits and overload pause dispatching with
 exponential backoff and halve the number of concurrent sessions (raised again by one after
@@ -61,9 +66,11 @@ LLM_SOURCES = ("llm", "unconventional", "refute", "more", "scout")   # DAG edge 
 EXPLORE_SOURCES = ("unconventional", "scout")   # root breadth class "explore"; other LLM sources: "candidate"
 # priority classes (lower first); CLS_TOP: root moves the search ranks high that lack a model value
 CLS_ROOT, CLS_TOP, CLS_BREADTH, CLS_CHILD, CLS_DEEP = 0, 1, 2, 3, 4
+NO_TARGET_KINDS = ("abstract", "heuristic")    # jobs about a decision, not about engine nodes
 USAGE_KEYS = ("input", "output", "cache_read", "cache_write")
 
-RATE_RE = re.compile(r"rate[_ -]?limit|\b429\b|too many requests|usage limit|limit reached|quota exceeded", re.I)
+RATE_RE = re.compile(r"rate[_ -]?limit|\b429\b|too many requests|usage limit|session limit|limit reached|quota exceeded",
+                     re.I)
 OVERLOAD_RE = re.compile(r"overloaded|\b529\b|\b503\b|service unavailable|api_error|internal server error", re.I)
 RESET_RE = re.compile(r"limit reached\|(\d{10})")
 
@@ -97,6 +104,7 @@ class LLMConfig:
     dispatch_delay_s: float = 2.0   # non-root requests wait this long after a new root, so that the
                                     # code search ranks the children before sessions are spent on them
     abstract: bool = True           # lessons job after each decision (needs an LLM evaluation at the root)
+    heuristic_timeout: float = 0.0  # session timeout of heuristic jobs (0 = job_timeout)
     cache: bool = True              # apply evaluations the DAG already holds (no model call)
     backoff_base: float = 30.0      # first pause after a rate limit / overload, doubled each time
     backoff_max: float = 1800.0
@@ -132,8 +140,9 @@ class Request:
     tag: str = ""                   # scout region / abstract label
     params: dict = field(default_factory=dict)
     cls: int = CLS_DEEP
-    context: str = ""               # abstract: the search summary
+    context: str = ""               # abstract: the search summary; heuristic: the surprises
     mem_points: list = field(default_factory=list)
+    memory: Optional[str] = None    # a prepared memory briefing (heuristic jobs)
     attempts: int = 0
     rl_attempts: int = 0
     not_before: float = 0.0
@@ -182,6 +191,13 @@ def classify_failure(res: JobResult, jobdir: Optional[Path]) -> tuple[str, Optio
                 if not isinstance(d, dict):
                     continue
                 typ, sub = d.get("type"), str(d.get("subtype") or "")
+                if typ == "rate_limit_event":           # CLI stream: {"rate_limit_info": {"status", "resetsAt"}}
+                    info = d.get("rate_limit_info") or {}
+                    if str(info.get("status")) == "rejected":
+                        texts.append(f"rate_limit rejected {info.get('rateLimitType', '')}")
+                        if info.get("resetsAt"):
+                            texts.append(f"limit reached|{int(info['resetsAt'])}")
+                    continue
                 if typ == "result" and d.get("is_error"):
                     texts.append(str(d.get("result", "")) + " " + json.dumps(d.get("error") or ""))
                 elif typ == "system" and ("retry" in sub or "error" in sub):
@@ -274,6 +290,7 @@ class LLMService:
         self._stop = False
         self._obs_extra = bool(learner is not None and hasattr(learner, "observe_external")
                                and _accepts_kwargs(learner.observe_external))
+        self.on_heuristic: Optional[Callable] = None   # (result, job, request, usage) for heuristic jobs
 
     @property
     def searching(self) -> bool:
@@ -324,7 +341,7 @@ class LLMService:
             self._seen.clear()
             self._dropped.clear()
             for rid, r in list(self._queue.items()):
-                if r.kind != "abstract":
+                if r.kind not in NO_TARGET_KINDS:
                     del self._queue[rid]
             self.root_key = None
         if eng is not None:
@@ -339,7 +356,7 @@ class LLMService:
             self.epoch += 1
             self._dropped.clear()
             for rid, r in list(self._queue.items()):
-                if r.kind != "abstract":
+                if r.kind not in NO_TARGET_KINDS:
                     del self._queue[rid]
 
     # ================================================================ engine side (must be quick)
@@ -367,7 +384,7 @@ class LLMService:
             self.root_label = label
             self.root_t0 = time.time()
             self._refuted = not self.cfg.refute
-            items = [(rid, r, list(r.targets)) for rid, r in self._queue.items() if r.kind != "abstract"]
+            items = [(rid, r, list(r.targets)) for rid, r in self._queue.items() if r.kind not in NO_TARGET_KINDS]
         # liveness outside the service lock (the exact subtree query asks the engine)
         live_of = {rid: [t for t in tg if self._in_subtree(t)] for rid, r, tg in items}
         dropped = []
@@ -533,6 +550,44 @@ class LLMService:
                     root_label=self.root_label)
         self._enqueue(r)
         return True
+
+    def drop_queued(self, keep: tuple = ()) -> int:
+        """Drop every queued request except those of the given kinds (e.g. after a final decision)."""
+        with self._lock:
+            gone = [rid for rid, r in self._queue.items() if r.kind not in keep]
+            for rid in gone:
+                del self._queue[rid]
+        return len(gone)
+
+    def wait_until_available(self, max_wait_s: float, log: Callable[[str], None] = print, min_pause_s: float = 60.0,
+                             sleep: Callable[[float], None] = time.sleep) -> float:
+        """Block while dispatching is paused for a rate / usage limit (a pause longer than min_pause_s),
+        at most max_wait_s in all; returns the seconds waited.  A play loop calls it before a decision so
+        that a search does not run without model input while the model is unavailable."""
+        waited, logged = 0.0, False
+        while waited < max_wait_s:
+            left = self.paused_until - time.time()
+            if left <= min_pause_s and not (logged and left > 0):
+                break
+            if not logged:
+                log(f"llm: model sessions paused for {left / 60:.0f} min (rate / usage limit, until "
+                    f"{time.strftime('%H:%M', time.localtime(self.paused_until))}); waiting before the next decision")
+                logged = True
+            step = min(30.0, max(1.0, left), max_wait_s - waited)
+            sleep(step)
+            waited += step
+        return waited
+
+    def request_heuristic(self, params: dict, context: str, memory: str, label: str) -> bool:
+        """Queue a heuristic job (mcts-llm-hl) prepared by mcts.hl.heuristics.HeuristicLoop: params
+        carry the surprise positions, the nudge targets and the book; the answer goes to
+        on_heuristic."""
+        if self.root_board is None or not self.root_dag:
+            return False
+        can = canonical_of(self.root_board)[1]
+        r = Request("heuristic", self.root_dag, can, [], tag=label or f"h{int(time.time())}", params=dict(params),
+                    cls=CLS_BREADTH, context=context, memory=memory, epoch=self.epoch, root_label=self.root_label)
+        return self._enqueue(r)
 
     # ================================================================ reporting
     def stats(self) -> dict:
@@ -708,7 +763,7 @@ class LLMService:
             self._queue[r.rid] = r
             self.ctr["queued"] += 1
             while len(self._queue) > self.cfg.queue_cap:
-                cands = [q for q in self._queue.values() if q.kind != "abstract" and q.cls > CLS_BREADTH] or \
+                cands = [q for q in self._queue.values() if q.kind not in NO_TARGET_KINDS and q.cls > CLS_BREADTH] or \
                     list(self._queue.values())
                 worst = max(cands, key=lambda q: (q.cls, -q.vis, q.seq))
                 del self._queue[worst.rid]
@@ -878,7 +933,7 @@ class LLMService:
         for r in items:
             if r.not_before > now:
                 continue
-            if r.kind == "abstract":
+            if r.kind in NO_TARGET_KINDS:
                 scored.append(((r.cls, 0, r.seq), r))
                 continue
             if r.epoch != self.epoch:
@@ -912,11 +967,14 @@ class LLMService:
         if key != r.dag_key:
             raise RuntimeError(f"canonical key mismatch {key} != {r.dag_key}")
         pos = self.dag.position(key)
-        if r.kind == "abstract":
-            pts = list(r.mem_points)
+        if r.memory is not None:
+            memory = r.memory
         else:
-            pts = [p for p, _ in heuristics.score_moves(pos)[:6] if p is not None]
-        memory = self.mem.briefing(pos, pts)
+            if r.kind == "abstract":
+                pts = list(r.mem_points)
+            else:
+                pts = [p for p, _ in heuristics.score_moves(pos)[:6] if p is not None]
+            memory = self.mem.briefing(pos, pts)
         known = describe_known(self.dag, key, pos) if r.kind in ("more", "refute") else ""
         params = dict(r.params)
         params.setdefault("title", f"Position {key[:8]}")
@@ -939,7 +997,11 @@ class LLMService:
     def _run(self, r: Request, job: Job) -> None:
         t0 = time.time()
         try:
-            res = self.worker.run(job)
+            to = self.cfg.heuristic_timeout if r.kind == "heuristic" else 0.0
+            if to > 0 and hasattr(self.worker, "timeout"):
+                res = _run_with_timeout(self.worker, job, to)
+            else:
+                res = self.worker.run(job)
         except Exception as e:
             res = JobResult(False, error=f"worker exception: {e!r}", worker=getattr(self.worker, "name", ""))
         try:
@@ -972,6 +1034,14 @@ class LLMService:
         if res.ok and res.result is not None:
             if r.kind == "abstract":
                 rec["lessons"] = self._write_lessons(r, job, res)
+            elif r.kind == "heuristic":
+                rec["heuristic"] = {"rules": len(res.result.get("rules") or []),
+                                    "nudges": len(res.result.get("nudges") or [])}
+                if self.on_heuristic is not None:
+                    try:
+                        self.on_heuristic(res.result, job, r, usage)
+                    except Exception as e:
+                        self.log(f"llm: on_heuristic failed: {e!r}")
             else:
                 v = self._write_dag(r, job, res)
             with self._lock:
@@ -987,7 +1057,7 @@ class LLMService:
             if r.kind in ("more", "refute") or r.tag:
                 self.dag.x("INSERT OR REPLACE INTO mcts_tags (key,kind,tag,job_id,ts) VALUES (?,?,?,?,?)",
                            (r.dag_key, r.kind, r.tag, job.id, time.time()))
-            if r.kind != "abstract":
+            if r.kind not in NO_TARGET_KINDS:
                 value = v if (r.kind != "more" or self.cfg.scout_values) else None
                 rec["applied"] = self._apply_all(r, value=value, cached=False, targets=targets, job_id=job.id)
                 rec["value"] = v
@@ -998,7 +1068,7 @@ class LLMService:
                 seen_keys = {t.key for t in targets}
                 late = [t for t in r.targets if t.key not in seen_keys]
                 self._running.pop(r.rid, None)
-            if r.kind != "abstract":
+            if r.kind not in NO_TARGET_KINDS:
                 if late:
                     rec["applied"] += self._apply_all(r, value=value, cached=False, targets=late, job_id=job.id)
                 if r.kind == "expand" and r.cls == CLS_ROOT and r.dag_key == self.root_dag:
@@ -1035,7 +1105,7 @@ class LLMService:
                 rec["w_cur"] = self.w_cur
             retry = (r.rl_attempts < cfg.max_rl_attempts) if fclass in ("rate_limit", "overloaded") else \
                 (r.attempts < cfg.max_attempts)
-            if retry and (r.kind == "abstract" or r.epoch == self.epoch) and r.rid not in self._queue:
+            if retry and (r.kind in NO_TARGET_KINDS or r.epoch == self.epoch) and r.rid not in self._queue:
                 r.not_before = self.paused_until if outage else now
                 self._queue[r.rid] = r
                 self.ctr["retried"] += 1
@@ -1162,6 +1232,18 @@ class LLMService:
         with self._lock:
             with open(self.record, "a") as f:
                 f.write(json.dumps(rec, default=str) + "\n")
+
+
+_TIMEOUT_LOCK = threading.Lock()
+
+
+def _run_with_timeout(worker, job, timeout: float):
+    """worker.run(job) with a session timeout of its own (CLI workers read .timeout per run)."""
+    with _TIMEOUT_LOCK:
+        import copy
+        w = copy.copy(worker)
+        w.timeout = timeout
+    return w.run(job)
 
 
 def _accepts_kwargs(fn) -> bool:

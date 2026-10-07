@@ -174,7 +174,7 @@ def _winrate(v: float) -> float:
 # extra sample fields passed to a learner whose observe() takes **kwargs (the hook's four
 # arguments stay the contract; the extras let a learner tell the playout part of q from the
 # external part, e.g. to fit lam)
-_OBSERVE_EXTRA = ("n", "key", "q_playout", "n_ext", "q_ext")
+_OBSERVE_EXTRA = ("n", "key", "q_playout", "n_ext", "q_ext", "ext_priors")
 
 
 def _accepts_extra(fn) -> bool:
@@ -227,6 +227,7 @@ class MCTS:
         self._mark: Optional[tuple] = None               # (root_gen, time, mark array, nodes marked)
         self.searches = 0
         self.gc_runs = 0
+        self._last_gc_s = 0.0
         self.frozen = False
         self.log: list[dict] = []
         self._push_params()
@@ -280,6 +281,11 @@ class MCTS:
         self._push_params()
         lib.mc_tree_set_policy(self._t, w.w.ctypes.data, N_FEATURES, self.cfg.playout_temperature,
                                self.cfg.prior_temperature, int(self.cfg.ladders_playout), int(self.cfg.ladders_prior))
+        rs = w.ruleset if getattr(w, "rules", None) else None     # model-written rules (mcts-llm-hl): priors only
+        if rs is not None:
+            lib.mc_tree_set_rules(self._t, rs.spec.ctypes.data, rs.n, rs.w.ctypes.data)
+        else:
+            lib.mc_tree_set_rules(self._t, None, 0, None)
         self.weights, self._wsig = w, sig
         return True
 
@@ -484,6 +490,8 @@ class MCTS:
             raise ValueError("give time_s and/or sims")
         if self.root_board.terminal:
             raise ValueError("the game is over at the root")
+        t_entry = time.monotonic()          # time_s counts from here: an eviction at the start is part of it
+        gc_s = 0.0
         T = int(threads or self.cfg.threads)
         with self._struct:
             if self._searching:
@@ -496,15 +504,18 @@ class MCTS:
                 self._push_params()
                 self._apply_pending()
                 if self.frozen or self.n_nodes >= 0.98 * self.a.node_cap or self.n_edges >= 0.98 * self.a.edge_cap:
+                    tg = time.monotonic()
                     self.gc()
+                    gc_s += time.monotonic() - tg
                 self._expand(self.root, self.root_board)
             while len(self._ths) < T:
                 self._ths.append(lib.mc_thread_new(self.cfg.seed * 1_000_003 + len(self._ths) + 1))
             self.a.ctr[C_SIMS_STARTED] = self.a.ctr[C_DEPTH_MAX] = 0
             ctr0 = self.a.ctr.copy()
             t0 = time.monotonic()
-            deadline = time.monotonic() + time_s if time_s else None
-            lib.mc_tree_set_limits(self._t, lib.mc_now_ns() + int(time_s * 1e9) if time_s else 0, int(sims or 0))
+            left = max(0.05, time_s - (t0 - t_entry)) if time_s else None
+            deadline = t0 + left if time_s else None
+            lib.mc_tree_set_limits(self._t, lib.mc_now_ns() + int(left * 1e9) if time_s else 0, int(sims or 0))
             lib.mc_tree_set_stop(self._t, 0)
             reasons: list[int] = []
             rounds, early = 0, False
@@ -531,10 +542,21 @@ class MCTS:
                     w.join()
                 self._drain_events()
                 reasons.extend(got)
-                if R_FULL in got and not self._stop_req and (not deadline or time.monotonic() < deadline) and \
+                # evict and go on only while there is time for it (an eviction takes about as long as the
+                # last one did), so a full tree does not stretch the move beyond time_s
+                if R_FULL in got and not self._stop_req and (
+                        not deadline or deadline - time.monotonic() > max(1.0, 1.5 * self._last_gc_s)) and \
                         (not sims or self.a.ctr[C_SIMS] - ctr0[C_SIMS] < sims):
+                    tg = time.monotonic()
                     with self._struct:
                         self.gc()
+                    gc_s += time.monotonic() - tg
+                    continue
+                if R_FULL in got and not self._stop_req and not self.frozen and deadline and \
+                        deadline - time.monotonic() > 0.2 and (not sims or self.a.ctr[C_SIMS] - ctr0[C_SIMS] < sims):
+                    with self._struct:          # no time to evict: search on without storing new leaves; the
+                        self.frozen = True      # next search evicts first (its time budget pays for it)
+                        self._push_params()
                     continue
                 break
         finally:
@@ -566,6 +588,7 @@ class MCTS:
             "playout_frac": float(d[C_PLAYOUT_NS]) / (el * 1e9 * T) if el > 0 else 0.0,
             "expand_frac": float(d[C_EXPAND_NS]) / (el * 1e9 * T) if el > 0 else 0.0,
             "stop_reason": reason, "weights": self.weights.version if self.weights else None,
+            "gc_s": round(gc_s, 3), "wall_s": round(time.monotonic() - t_entry, 3),
             "weights_refreshed": refreshed, "moves": stats,
         }
         self._observe()
@@ -593,7 +616,9 @@ class MCTS:
                         "key": int(self.a.key[i]),
                         # the two parts of q separately (playouts only; external values backed up)
                         "q_playout": _winrate(float(self.a.w[i]) / n_i) if n_i else None,
-                        "n_ext": nx_i, "q_ext": _winrate(float(self.a.wx[i]) / nx_i) if nx_i else None})
+                        "n_ext": nx_i, "q_ext": _winrate(float(self.a.wx[i]) / nx_i) if nx_i else None,
+                        # the node's priors include external (model) priors (mcts-llm-hl: hybrid targets)
+                        "ext_priors": bool(int(self.a.flags[i]) & FL_EXT)})
             for c in sorted(ch, key=lambda c: -c["n"]):
                 if c["child"] >= 0 and c["child"] not in seen and c["n"] >= min_n:
                     seen.add(c["child"])
@@ -856,6 +881,7 @@ class MCTS:
         `low_water` (default cfg.gc_low_water) of both caps, then compact the arrays.  The root's
         subtree is never evicted; if it alone fills 90% of a cap the tree is frozen (new leaves are
         evaluated by playouts but neither stored nor expanded) until advance() moves the root."""
+        t_gc = time.monotonic()
         with self._struct:
             a = self.a
             low = self.cfg.gc_low_water if low_water is None else low_water
@@ -877,6 +903,7 @@ class MCTS:
             evicted = nn - int(keep.sum())
             self._compact(keep)
             self.gc_runs += 1
+            self._last_gc_s = time.monotonic() - t_gc
             self.frozen = n_reach >= 0.9 * a.node_cap or e_reach >= 0.9 * a.edge_cap
             self._push_params()
             info = {"before": nn, "reachable": n_reach, "evicted": evicted, "after": self.n_nodes,

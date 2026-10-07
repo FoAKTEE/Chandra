@@ -128,6 +128,43 @@ int mc_all_logits(const MCBoard* b, const double* w, int ladders, int16_t* moves
 void mc_policy_set(MCPolicy* pol, const double* w, int nf, double t_playout, double t_prior, int lad_playout,
                    int lad_prior);
 
+/* ----------------------------------------------------------------- rules (rules.c)
+   Model-written move heuristics (gotree/heurdsl.py), compiled by mcts/rules.py.  They add their
+   weight to a matching move's logit in the tree priors (expansion), never in playouts. */
+#define MC_MAXRULES 128
+#define MC_RULE_INTS 64    /* ints per rule in the flat spec mcts/rules.py writes (56 used) */
+
+typedef struct {
+    int32_t nv;                    /* distinct orientations (1..8) */
+    uint32_t forbid[8][4];         /* per orientation, per cell state (empty, own, opp, off): 5x5 cells
+                                      (bit y*5+x) where that state is not allowed */
+    int16_t cap_lo, cap_hi;        /* lo < 0: no condition */
+    int16_t libs_lo, libs_hi;
+    int16_t line_lo, line_hi;
+    int16_t dist_lo, dist_hi;
+    int8_t atari, self_atari, escape, lcap, lesc;   /* -1 any, 0 must not, 1 must */
+    int8_t has_opp, has_own;
+    int16_t opp_l_lo, opp_l_hi, opp_s_lo, opp_s_hi;
+    int16_t own_l_lo, own_l_hi, own_s_lo, own_s_hi;
+    int8_t need_tac;
+    uint64_t core[(MC_NPAT_MAX + 63) / 64];   /* canonical 3x3 pattern indices the rule's centre allows */
+} MCRule;
+
+typedef struct {
+    int32_t n;
+    MCRule r[MC_MAXRULES];
+    double w[MC_MAXRULES];
+} MCRules;
+
+int mc_ladder_capture(const MCBoard* b, int bp);       /* features.c: the ladder feature readings */
+int mc_ladder_escape_fails(const MCBoard* b, int bp);
+int mc_rules_set(MCRules* R, const int32_t* spec, int n, const double* w);
+/* indices of the rules matching legal move bp (not pass); returns their count */
+int mc_rule_match(const MCBoard* b, const MCChains* ch, int bp, const MCRules* R, int* out);
+/* mc_all_logits plus the weights of the matching rules */
+int mc_all_logits_r(const MCBoard* b, const double* w, int ladders, const MCRules* R, int16_t* moves,
+                    double* logits);
+
 /* ----------------------------------------------------------------- playouts */
 static inline uint64_t mc_rand(uint64_t* s) {   /* xorshift64* */
     uint64_t x = *s;

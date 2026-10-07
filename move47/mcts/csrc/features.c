@@ -215,6 +215,9 @@ static int ladder_escape_fails(const MCBoard* b, int p) {
     return ladder_attack(&nb, p, &budget);
 }
 
+int mc_ladder_capture(const MCBoard* b, int p) { return ladder_capture(b, p); }
+int mc_ladder_escape_fails(const MCBoard* b, int p) { return ladder_escape_fails(b, p); }
+
 /* ------------------------------------------------------------------ features */
 static inline int dist_bucket(const MCBoard* b, int p, int q) {
     const int s = b->stride;

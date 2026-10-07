@@ -112,8 +112,50 @@ def _regression_set(path: str) -> Optional[PolicySet]:
     return PolicySet(rows, tgts, ws) if rows else None
 
 
+@lru_cache(maxsize=4)
+def _regression_rows(path: str) -> tuple:
+    out = []
+    for e in _load_positions(path):
+        b = Board.from_dict(e["board"])
+        r = policy_rows(b)
+        t = target_vector(r, norm_dist(e["pi"], b.size))
+        if t is not None:
+            out.append((e["board"], r, t))
+    return tuple(out)
+
+
+_RULE_HITS: dict = {}       # (path, rule canonical) -> per position: row indices the rule matches
+
+
+def _rule_set(path: str, rules: list) -> Optional[PolicySet]:
+    """The regression set with the rule columns of `rules` (model-written rules, mcts-llm-hl)."""
+    from ..rules import RuleSet
+    from ..board import Board as _B
+    from .data import rule_hit_rows, with_rule_hits
+    base = _regression_rows(path)
+    if not base:
+        return None
+    todo = [r for r in rules if (path, r["canonical"]) not in _RULE_HITS]
+    if todo:
+        rs = RuleSet(todo)
+        per = [rule_hit_rows(rs, _B.from_dict(bd), r.moves) for bd, r, _ in base]
+        for j, r in enumerate(todo):
+            _RULE_HITS[(path, r["canonical"])] = [p[j] for p in per]
+    cols = {r["id"]: j for j, r in enumerate(rules)}
+    rows = [with_rule_hits(r, {x["id"]: _RULE_HITS[(path, x["canonical"])][k] for x in rules}, cols)
+            for k, (_, r, _) in enumerate(base)]
+    from .._lib import N_FEATURES
+    return PolicySet(rows, [t for _, _, t in base], [1.0] * len(base), nfeat=N_FEATURES + len(rules))
+
+
 def regression_metrics(weights: Weights, path: Optional[Path] = None) -> Optional[dict]:
-    """Cross-entropy etc. of the weights' priors against the regression set's deep-search targets."""
+    """Cross-entropy etc. of the weights' priors against the regression set's deep-search targets
+    (with the weights' model-written rules, if they carry any)."""
+    if getattr(weights, "rules", None):
+        ps = _rule_set(str(path or POSITIONS_PATH), weights.rules)
+        if ps is None:
+            return None
+        return ps.metrics(weights.full, float(weights.params.get("prior_temperature", 1.0)))
     ps = _regression_set(str(path or POSITIONS_PATH))
     if ps is None:
         return None
@@ -164,6 +206,8 @@ def build_positions(out: Path, games: int = 6, per_game: int = 25, move_time: fl
     out.write_text(json.dumps(doc, separators=(",", ":")) + "\n")
     _load_positions.cache_clear()
     _regression_set.cache_clear()
+    _regression_rows.cache_clear()
+    _RULE_HITS.clear()
     return {"positions": len(entries), "bytes": out.stat().st_size, "time_s": time.time() - t0}
 
 

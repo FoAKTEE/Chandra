@@ -7,7 +7,11 @@ A weight file is JSON:
      "weights": {"capture:1": 2.0, "pat3:...": 1.0, ...}}      # non-zero weights by feature name
 
 `params` may also carry the mixing weights a learner fits (`lam`, `beta`); the engine applies the
-params it knows (see MCTSConfig) when it picks the weights up.  The hand-written default below is
+params it knows (see MCTSConfig) when it picks the weights up.  A file may also carry `rules`
+(node move47::mcts-llm-hl): model-written rules in the gotree.heurdsl language, each with its
+weight, which the tree priors add to matching moves (mcts/rules.py; never used in playouts):
+
+    "rules": [{"id": "R1", "name": "...", "pattern": [5 rows], "conditions": {...}, "w": 0.7}]  The hand-written default below is
 the starting point the online learner (M7) replaces; `python3 -m mcts weights --write-default`
 regenerates mcts/weights/default-v1.json from this code (a test checks they agree).
 """
@@ -36,23 +40,58 @@ class Weights:
     version: str = "unversioned"
     params: dict = field(default_factory=dict)
     description: str = ""
+    rules: list = field(default_factory=list)       # model-written rules (mcts.rules), in index order
+    w_rules: Optional[np.ndarray] = None            # one weight per rule
 
     def __post_init__(self):
         self.w = np.ascontiguousarray(self.w, dtype=np.float64)
         if self.w.shape != (N_FEATURES,):
             raise ValueError(f"weights must have {N_FEATURES} entries")
+        self.rules = list(self.rules or [])
+        self.w_rules = np.zeros(len(self.rules)) if self.w_rules is None else \
+            np.ascontiguousarray(self.w_rules, dtype=np.float64)
+        if self.w_rules.shape != (len(self.rules),):
+            raise ValueError("w_rules must have one weight per rule")
+        self._rs = None
 
     @property
     def digest(self) -> str:
         h = hashlib.sha256(self.w.tobytes())
         h.update(json.dumps(self.params, sort_keys=True).encode())
+        if self.rules:
+            from .rules import rules_digest
+            h.update(rules_digest(self.rules, self.w_rules).encode())
         return h.hexdigest()[:16]
+
+    @property
+    def full(self) -> np.ndarray:
+        """The feature weights followed by the rule weights (the learner's parameter vector)."""
+        return np.concatenate([self.w, self.w_rules]) if self.rules else self.w
+
+    @property
+    def ruleset(self):
+        """The compiled rules with their weights (mcts.rules.RuleSet), None without rules."""
+        if not self.rules:
+            return None
+        from .rules import RuleSet, rules_digest
+        d = rules_digest(self.rules, self.w_rules)
+        if self._rs is None or self._rs[0] != d:
+            self._rs = (d, RuleSet(self.rules, self.w_rules))
+        return self._rs[1]
+
+    def with_rules(self, rules: list, w_rules, version: Optional[str] = None) -> "Weights":
+        return Weights(self.w.copy(), version or self.version, dict(self.params), self.description, list(rules),
+                       np.asarray(w_rules, dtype=np.float64))
 
     def to_json(self) -> dict:
         names = feature_names()
-        return {"format": FORMAT, "spec": spec_id(), "version": self.version, "description": self.description,
-                "params": self.params,
-                "weights": {names[i]: round(float(self.w[i]), 6) for i in np.flatnonzero(self.w)}}
+        d = {"format": FORMAT, "spec": spec_id(), "version": self.version, "description": self.description,
+             "params": self.params,
+             "weights": {names[i]: round(float(self.w[i]), 6) for i in np.flatnonzero(self.w)}}
+        if self.rules:
+            from .rules import rules_json
+            d["rules"] = rules_json(self.rules, self.w_rules)
+        return d
 
     def save(self, path: Union[str, Path]) -> Path:
         path = Path(path)
@@ -74,7 +113,13 @@ class Weights:
             if name not in idx:
                 raise ValueError(f"unknown feature {name!r}")
             w[idx[name]] = float(v)
-        return cls(w, d.get("version", "unversioned"), dict(d.get("params") or {}), d.get("description", ""))
+        rules, wr = [], None
+        if d.get("rules"):
+            from .rules import load_rules
+            rules = load_rules(d["rules"])
+            wr = np.array([float(e.get("w", 0.0)) for e in d["rules"]])
+        return cls(w, d.get("version", "unversioned"), dict(d.get("params") or {}), d.get("description", ""),
+                   rules, wr)
 
     @classmethod
     def load(cls, path: Union[str, Path]) -> "Weights":

@@ -93,9 +93,14 @@ def _weights_array(weights) -> np.ndarray:
 
 
 def move_logits(position: Positionish, weights, ladders: bool = True) -> dict[Optional[int], float]:
-    """{move: logit} for every legal move (None = pass); the policy is softmax(logit / T)."""
+    """{move: logit} for every legal move (None = pass); the policy is softmax(logit / T).  Weights
+    that carry model-written rules (mcts.rules, node move47::mcts-llm-hl) add the weights of the
+    rules matching each move, as the tree priors do."""
     b = as_board(position)
     w = _weights_array(weights)
+    rs = getattr(weights, "ruleset", None) if getattr(weights, "rules", None) else None
+    if rs is not None:
+        return rs.logits(b, w, ladders)
     cap = b.size * b.size + 1
     moves = (ctypes.c_int16 * cap)()
     logits = (ctypes.c_double * cap)()

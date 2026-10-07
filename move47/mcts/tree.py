@@ -133,6 +133,20 @@ def _winrate(v: float) -> float:
     return (1.0 + v) / 2.0
 
 
+# extra sample fields passed to a learner whose observe() takes **kwargs (the hook's four
+# arguments stay the contract; the extras let a learner tell the playout part of q from the
+# external part, e.g. to fit lam)
+_OBSERVE_EXTRA = ("n", "key", "q_playout", "n_ext", "q_ext")
+
+
+def _accepts_extra(fn) -> bool:
+    import inspect
+    try:
+        return any(p.kind is inspect.Parameter.VAR_KEYWORD for p in inspect.signature(fn).parameters.values())
+    except (TypeError, ValueError):
+        return False
+
+
 class MCTS:
     """The search engine for one game.  Construct with the root position (Board, Position or None
     for the empty board) and the game's earlier positions' stone hashes (positional superko)."""
@@ -464,9 +478,13 @@ class MCTS:
             if tot <= 0:
                 continue
             q = self.node_q(i)
+            n_i, nx_i = int(self.a.n[i]), int(self.a.nx[i])
             out.append({"position": b, "visit_distribution": {c["move"]: c["n"] / tot for c in ch if c["n"]},
-                        "q": None if q is None else _winrate(q), "depth": depth, "n": int(self.a.n[i]),
-                        "key": int(self.a.key[i])})
+                        "q": None if q is None else _winrate(q), "depth": depth, "n": n_i,
+                        "key": int(self.a.key[i]),
+                        # the two parts of q separately (playouts only; external values backed up)
+                        "q_playout": _winrate(float(self.a.w[i]) / n_i) if n_i else None,
+                        "n_ext": nx_i, "q_ext": _winrate(float(self.a.wx[i]) / nx_i) if nx_i else None})
             for c in sorted(ch, key=lambda c: -c["n"]):
                 if c["child"] >= 0 and c["child"] not in seen and c["n"] >= min_n:
                     seen.add(c["child"])
@@ -480,8 +498,10 @@ class MCTS:
         if self.learner is None:
             return
         fn = getattr(self.learner, "observe", self.learner)
+        extra = _accepts_extra(fn)
         for s in self.samples():
-            fn(position=s["position"], visit_distribution=s["visit_distribution"], q=s["q"], depth=s["depth"])
+            kw = {k: s[k] for k in _OBSERVE_EXTRA} if extra else {}
+            fn(position=s["position"], visit_distribution=s["visit_distribution"], q=s["q"], depth=s["depth"], **kw)
 
     # ------------------------------------------------------------ external priors and values
     def set_external(self, node_key: Union[int, str], priors: Optional[dict] = None, value: Optional[float] = None,

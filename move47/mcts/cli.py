@@ -149,6 +149,12 @@ def _register_llm(sub) -> None:
     add_parsers(sub)
 
 
+def _register_hl(sub) -> None:
+    """learn-selfplay, weights-ab, hl-report, hl-guards, hl-export-heldout, hl-regression-build (mcts/hl/cli.py)."""
+    from .hl.cli import register
+    register(sub)
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="python3 -m mcts", description=__doc__)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -205,6 +211,7 @@ def main(argv=None) -> int:
     p.set_defaults(fn=cmd_arena)
 
     _register_llm(sub)
+    _register_hl(sub)
 
     a = ap.parse_args(argv)
     return a.fn(a)

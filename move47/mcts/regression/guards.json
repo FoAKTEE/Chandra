@@ -1,0 +1,187 @@
+{
+ "format": "move47-mcts-regression/1",
+ "kind": "guards",
+ "description": "tactical guards: a learned weight version must keep each top move among the k highest priors and each avoid move out of them (tree priors: ladders on, the version's prior temperature)",
+ "guards": [
+  {
+   "name": "capture-4-stones",
+   "kind": "top",
+   "k": 3,
+   "moves": [
+    "E4"
+   ],
+   "to_play": "X",
+   "rows": [
+    ". . . . . . . . .",
+    ". . . . . . . . .",
+    ". . X X X . . . .",
+    ". X O O O X . . .",
+    ". . X X O X . . .",
+    ". . . . . . . . .",
+    ". . . . . . . . .",
+    ". . . . . . . . .",
+    ". . . . . . . . ."
+   ]
+  },
+  {
+   "name": "capture-1-stone",
+   "kind": "top",
+   "k": 3,
+   "moves": [
+    "E5"
+   ],
+   "to_play": "X",
+   "rows": [
+    ". . . . . . . . .",
+    ". . . . . . . . .",
+    ". . . . X . . . .",
+    ". . . X O X . . .",
+    ". . . . . . . . .",
+    ". . . . . . . . .",
+    ". . O . . . . . .",
+    ". . . . . . . . .",
+    ". . . . . . . . ."
+   ]
+  },
+  {
+   "name": "capture-2-on-edge",
+   "kind": "top",
+   "k": 3,
+   "moves": [
+    "B1"
+   ],
+   "to_play": "X",
+   "rows": [
+    ". . . . . . . . .",
+    ". . . . . . . . .",
+    ". . . . . . . . .",
+    ". . . . . O . . .",
+    ". . . . . . . . .",
+    ". . . . . . . . .",
+    ". . . . . . . . .",
+    ". . X X . . . . .",
+    ". . O O X . . . ."
+   ]
+  },
+  {
+   "name": "save-group-in-atari",
+   "kind": "top",
+   "k": 3,
+   "moves": [
+    "E4"
+   ],
+   "to_play": "X",
+   "rows": [
+    ". . . . . . . . .",
+    ". . . . . . . . .",
+    ". . . O O . . . .",
+    ". . O X X O . . .",
+    ". . O X X O . . .",
+    ". . . O . . X . .",
+    ". . . . . X X . .",
+    ". . . . . . . . .",
+    ". . . . . . . . ."
+   ]
+  },
+  {
+   "name": "escape-1-stone",
+   "kind": "top",
+   "k": 3,
+   "moves": [
+    "E5"
+   ],
+   "to_play": "X",
+   "rows": [
+    ". . . . . . . . .",
+    ". . . . . . . . .",
+    ". . . . O . . . .",
+    ". . . O X O . . .",
+    ". . . . . . . . .",
+    ". . . . . . . . .",
+    ". . . . . . X . .",
+    ". . . . . . . . .",
+    ". . . . . . . . ."
+   ]
+  },
+  {
+   "name": "escape-white-to-play",
+   "kind": "top",
+   "k": 3,
+   "moves": [
+    "E5"
+   ],
+   "to_play": "O",
+   "rows": [
+    ". . . . . . . . .",
+    ". . . . . . . . .",
+    ". . . . X . . . .",
+    ". . . X O X . . .",
+    ". . . . . . . . .",
+    ". . . . . . . . .",
+    ". . X . . . . . .",
+    ". . . . . . . . .",
+    ". . . . . . . . ."
+   ]
+  },
+  {
+   "name": "no-self-atari-7-stones",
+   "kind": "avoid",
+   "k": 5,
+   "moves": [
+    "D6"
+   ],
+   "to_play": "X",
+   "rows": [
+    ". . . . . . X . .",
+    ". . O O O . X . .",
+    ". O X X X O X . .",
+    ". O X . X O X . .",
+    ". . O X O . X . .",
+    ". . . . . . X . .",
+    "X X X X X X X . .",
+    ". . . . . . . . .",
+    ". . . . . . . . ."
+   ]
+  },
+  {
+   "name": "no-self-atari-3-stones",
+   "kind": "avoid",
+   "k": 5,
+   "moves": [
+    "D1"
+   ],
+   "to_play": "X",
+   "rows": [
+    ". . . . . . . . .",
+    ". . . . . . . . .",
+    ". . . . . . . . .",
+    ". . . . . . . . .",
+    ". . . . X . . . .",
+    ". . . . . . . . .",
+    ". . . . . . . . .",
+    ". O O O . . . . .",
+    ". X X . O . . . ."
+   ]
+  },
+  {
+   "name": "no-eye-fill",
+   "kind": "avoid",
+   "k": 5,
+   "moves": [
+    "A1"
+   ],
+   "to_play": "X",
+   "rows": [
+    ". . . . . . . . .",
+    ". . . . . . . . .",
+    ". . . . . . . . .",
+    ". . . . . . . . .",
+    ". . . . O . . . .",
+    ". . . . . . . . .",
+    "X X X . . . . . .",
+    "X X X . . . . . .",
+    ". X . X . . . . ."
+   ]
+  }
+ ]
+}

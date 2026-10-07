@@ -358,3 +358,135 @@ halved and raised again, failure classes from session logs, refute and lessons, 
 against a fake arena (the new root keeps its exact visit count, per-move records, learner calls), resume after a
 crash from the saved tree, the code-only ablation, `--learn` without and with `mcts.hl`, the runner's `mcts`
 adapter command and a full runner game against `random` with the mock worker.
+
+## MCTS v2 online learning (`mcts/hl/`, node `move47::mcts-hl`)
+
+MISSION.md section 5, Heuristic Learning. After every decision the learner refits what the engine
+reads at its next search: (a) the policy weights shared by the tree prior and the playout policy,
+(b) a value model, (c) the mixing weights `lam` and `beta`. The targets come only from our own
+search (visit distributions and backed-up Q of well-visited nodes) and our own game results.
+Nothing from KataGo enters.
+
+```python
+from mcts.hl import OnlineLearner
+learner = OnlineLearner(run_dir, base=None)          # base: Weights / path, default default-v1; resumes
+eng = MCTS(board, weights=learner.provider, learner=learner)    # provider.get() -> current version
+r = eng.search(time_s=30, threads=32)                # the engine calls learner.observe(...) per node
+learner.update()                                     # refit + gate: a new version, or why not
+eng.advance(r["best_move"]); eng.advance(reply)      # the tree is kept; the next search uses the new version
+learner.observe_external(position, "llm", priors, value)   # an LLM evaluation of a node arrived (M8)
+learner.observe_game(+1, "B")                        # our result (+1 / -1, or "B+3.5", "W+R"), our colour
+```
+
+| part | design |
+|---|---|
+| samples | Every node of the root's subtree with at least `observe_min_visits` (256) visits after each search: position, visit distribution, q. Additive change in `mcts/tree.py`: a sample also carries `n`, `key`, the playout-only `q_playout` and the external part `q_ext` / `n_ext`. `_observe` passes these only to a learner whose `observe` takes `**kwargs`; plain 4-argument hooks are unchanged. The ring buffer holds 30 000 node keys, and the latest observation of a node replaces the older one. The held-out split is a fixed hash of the node key (20%), so a position is on the same side in every update, game and process. |
+| (a) policy | Linear softmax over the legal moves (the tree's edge set), logit = w·f / T. f is the 1148 features of FEATURES.md with ladders on. Expert iteration: cross-entropy to the visit distribution, with sample weight `min(8, sqrt(n / 256))`. Two L2 terms: 1e-3 toward the current version (smooth steps) and 1e-3 toward the base version (`l2_base`, the anchor). L-BFGS (numpy only), warm-started from the current version, at most `fit_time` seconds. Each fit trains on a uniform subset of at most 16 000 of the buffer's training nodes. |
+| gate | The candidate becomes the next version only if all three hold: (1) its weighted cross-entropy on the held-out nodes is lower by more than 1e-4 nats; (2) it keeps every tactical guard; (3) its cross-entropy on the regression positions is at most 0.02 nats above its parent's and 0.05 above the base's. Otherwise the old version stays, and `update()` says why. The `top` guards are also training rows (one-hot on the guard move, weight 8). If a guard is still lost, the fit is redone with the anchors 8x and then 64x heavier. |
+| options, off | `playout_temp="match"` refits the playout temperature to keep default-v1's playout entropy. `censor=True` fits below the root only over the visited moves, because progressive widening gives a never-admitted move zero visits whatever its merit. Both lost or showed nothing in the A/Bs below. The prior temperature is absorbed by w. |
+| (b) value | Logistic regression on 9 cheap inputs: mean result, mean score and score z-value of 16 playouts with the base weights; the area score now; the stage; own and opponent stones in atari. Fitted to the training nodes' playout-only q (soft labels) and to the game results of finished games (weight 0.5). On held-out nodes it is compared with the short playout estimate (the same 16 playouts). Stored in `state.json`. Not wired into the engine (below). |
+| (c) lam, beta | From nodes with an external evaluation of source `llm`. At `observe_external` the learner records the external value and priors, the current version's priors, and a playout estimate of the node (32 playouts, or the caller's `q_playout`). When the node is observed again with at least 2x its visits (and at least 256), the learner pairs that evaluation with the deeper result: the playout-only deep q and the final visit distribution. `lam` is a closed-form least-squares fit of `(1-lam)·v_llm + lam·z` against the deep q. `beta` is a grid maximum-likelihood fit of `(1-beta)·p_learned + beta·p_llm` against the visit distribution. Both are shrunk toward 0.5 with 10 pseudo-pairs, clipped to [0.1, 0.9], and written as `params.lam/beta` once 20 pairs exist. |
+| persistence | In the run dir: `state.json` (current version, counters, value model, last mix fit), `weights-vNNN.json`, `samples.jsonl`, `external.jsonl`, `games.jsonl`, `value-inputs.jsonl` and `updates.jsonl` (one line per update). v000 is the base. Every accepted version is a normal weight file with an `hl` block: parent version, digest and file, sample counts, train / held-out / regression metrics, guards, reason. Writes are atomic and serialised by a file lock. The provider re-reads `state.json` when another process has advanced the run, and `OnlineLearner(run_dir)` resumes from it. |
+| threads | The learner caps numpy's OpenBLAS pool at 1 thread (`blas_threads`, process-wide). Without the cap, one update kept on average 30 cores busy, with up to 65 threads running (busy-waiting). With it, the update uses 1.6 cores, and the value inputs' playouts use `threads` threads. An update takes 2.4 and 2.5 s on average in the two final runs (max 4.9 s) with a 30 000-node buffer. |
+
+**Regression set** (`mcts/regression/`, tracked, 0.25 MB):
+- `guards.json` holds 9 hand-written tactical positions. Kind `top` (one of the moves must stay among the k = 3 highest priors): capture 4 stones, capture 1 stone, capture 2 on the edge, save a group in atari, extend a stone out of atari (black and white to play). Kind `avoid` (the move must stay out of the top 5): a 7-stone self-atari, a 3-stone self-atari on the edge, filling an own eye. default-v1 ranks every `top` move first.
+- `positions.json` holds 150 positions from 6 code-only self-play games with default-v1 (0.3 s/move), each with the root visit distribution of a fresh 200 000-simulation search (`hl-regression-build`).
+- `heldout-selfplay.json` holds 300 held-out nodes (at least 1000 visits) of the run that produced the shipped weights (`hl-export-heldout`).
+- `mcts/weights/hl-selfplay-20261007.json` is that run's last version, hl-v217. Tests check that it keeps every guard and beats default-v1 on the held-out nodes: cross-entropy 2.463 vs 2.888, top-1 0.34 vs 0.27. On the regression positions it is level with default-v1 (2.682 vs 2.682).
+
+```bash
+python3 -m mcts learn-selfplay --run <dir outside Chandra> --games 8 --time 1.0 --threads 16 [--base FILE] [--hl KEY=VALUE]
+python3 -m mcts weights-ab --a FILE --b FILE --games 40 --time 1.0 --threads 8 --procs 2 [--run DIR] [--a-value-model STATE]
+python3 -m mcts hl-report --run DIR [--every 25] [--json]     # every version: held-out CE, regression CE, guards, reuse
+python3 -m mcts hl-guards --weights FILE                       # guards + regression CE of one weight file
+python3 -m mcts hl-export-heldout --run DIR                    # -> mcts/regression/heldout-selfplay.json
+python3 -m mcts hl-regression-build                            # -> mcts/regression/positions.json
+```
+
+**Measured** (host anta, 2026-10-07; code only, 9x9, komi 7.5; other users' load 15 to 30 threads; run
+dirs under `runs/move47/hl-20261007/`).
+
+*(i) Online learning, final defaults.* Two runs with
+`learn-selfplay --games 8 --time 1.0 --threads 16 --hl fit_time=4`, seeds 4 and 5. One tree per
+game, and an update after every decision. Every version is evaluated on its run's final held-out
+nodes (6023 and 5901, never trained on) and on the regression positions:
+
+| run | version | held-out CE | held-out top-1 | regression CE | guards |
+|---|---|---|---|---|---|
+| seed 4 | default-v1 | 2.887 | 0.264 | 2.682 | pass |
+| seed 4 | hl-v050 | 2.695 | 0.285 | 2.587 | pass |
+| seed 4 | hl-v100 | 2.642 | 0.297 | 2.620 | pass |
+| seed 4 | hl-v150 | 2.578 | 0.306 | 2.639 | pass |
+| seed 4 | hl-v217 (last) | 2.429 | 0.341 | 2.682 | pass |
+| seed 5 | default-v1 | 2.832 | 0.278 | 2.682 | pass |
+| seed 5 | hl-v100 | 2.619 | 0.299 | 2.601 | pass |
+| seed 5 | hl-v173 (last) | 2.455 | 0.336 | 2.649 | pass |
+
+Seed 4 ran 551 updates and accepted 217; seed 5 ran 526 and accepted 173.
+
+*(ii) A/B against default-v1, code-only MCTS.* Both sides get the same time per move; colours
+alternate; a side resigns below 3% after move 40. Each engine keeps its own tree through the game.
+Win rates are for A, with Wilson 95% intervals.
+
+| A | how A was made | games | s/move | threads | A wins | win rate | 95% CI |
+|---|---|---|---|---|---|---|---|
+| hl-v217 (seed 4) | online, final defaults | 40 | 1.0 | 8 x 2 procs | 19 | 0.475 | 0.329-0.625 |
+| hl-v173 (seed 5) | online, final defaults | 40 | 1.0 | 8 x 2 | 24 | 0.600 | 0.446-0.737 |
+| both, pooled | | 80 | 1.0 | | 43 | 0.538 | 0.429-0.643 |
+| hl-v334 (learn-final) | online, played-out games, no base anchor | 60 | 1.0 | 8 x 4 | 21 | 0.350 | 0.242-0.476 |
+| hl-v070 (learn-keep) | online, no anchor, newest-12k training window | 40 | 0.5 | 8 x 2 | 23 | 0.575 | 0.422-0.715 |
+| hl-v084 (learn-match) | as learn-keep, playout temperature refit | 40 | 0.5 | 8 x 2 | 14 | 0.350 | 0.221-0.505 |
+| learn-final's buffer, one fit | anchored to default-v1 | 40 | 1.0 | 8 x 2 | 16 | 0.400 | 0.263-0.554 |
+| same, under 45 stones | diagnostic | 40 | 1.0 | 8 x 2 | 22 | 0.550 | 0.398-0.693 |
+| same, censored targets | diagnostic | 40 | 1.0 | 8 x 2 | 20 | 0.500 | 0.352-0.648 |
+| 4 default-v1 self-play games, one fit | anchored to default-v1 | 40 | 1.0 | 8 x 2 | 26 | 0.650 | 0.495-0.779 |
+| default-v1 + value hook | value model as an external value | 40 | 0.5 | 8 x 2 | 5 | 0.125 | 0.055-0.261 |
+
+How the rows set the defaults:
+- **Without the base anchor, the versions drift.** learn-final kept improving on its own held-out nodes (CE 2.263 → 1.647, top-1 0.36 → 0.61). Its regression CE rose at the same time (2.68 → 3.44), and its last version lost (0.35, interval below 0.5). Refitting toward the previous version alone has no fixed point, and the targets come from the drifted versions' own searches.
+- **With the anchor, the drift stops.** The regression CE stays at or below default-v1's. The final online versions are level with default-v1 (pooled 0.54).
+- **The playout-temperature refit lost** (0.35), so it is off.
+- **Censoring showed no gain** (0.50 vs 0.40, inside each other's intervals), so it is off.
+- **Learn-selfplay resigns again** (3%, after move 40). A run whose games were played out to the end gave endgame-heavy data, and no fit on such data beat 0.55.
+- **The training subset is uniform.** The first round trained on the newest 12 000 nodes and gated on held-out nodes from the whole buffer. After game 3 that stalled acceptance at 2-4 versions per game.
+- The diagnostic one-off fits are kept with their scripts in the run dir's `scripts/`; they are not tracked.
+
+*(iii) Tree reuse plus learning.* In the two final runs a new weights version was picked up
+between consecutive moves 213 and 170 times. Every time, the tree was kept: the search started
+from the reused root with on average 391 000 and 302 000 visits. 543 of 551 and 518 of 526 searches
+started from a reused root; the rest are game starts.
+
+*Value model (b).* Mean squared error on the held-out nodes (vs their deep q), against the short
+playout estimate from the same 16 playouts. Seed 4: 0.025 vs 0.050. Seed 5: 0.020 vs 0.024. Against
+the game results: 0.108 vs 0.187 and 0.122 vs 0.149. So it predicts the deep q better than the
+short estimate. It is not wired in. The only route into the engine without a C change is an
+external value (`on_expand` → `set_external`), which the engine mixes at weight `1 - lam` like an
+LLM value. Through that route it lost 5 of 40 games against the same engine without it.
+
+*lam / beta (c).* Code-only runs have no external evaluations: 0 pairs, so the defaults (0.5 / 0.5)
+stay and no version carries `params.lam/beta`. The fit is tested on synthetic data. Through the
+learner and the engine it recovers lam 0.8 and beta 0.2; called directly, lam 0.3 and beta 0.75.
+
+Tests: `python3 -m pytest -q tests/test_mcts_hl.py -p no:cacheprovider` (24 tests, about 18 s):
+- the interface (five methods, provider, extras from the tree, SGF result strings);
+- a new version is picked up between moves while the tree is kept;
+- learning lowers held-out CE and writes a versioned file;
+- the gate rejects a worse fit, a fit that loses a guard, and a fit that is worse on a regression set;
+- the base anchor bounds drift: repeated updates converge to the one-shot anchored fit, and without the anchor they keep moving;
+- the playout-temperature refit;
+- state persists and resumes in another process, and the provider sees that process's version;
+- the ring buffer;
+- lam / beta recovery;
+- the value fit and the value hook;
+- censored targets;
+- the regression files;
+- the shipped weights against the guards and the held-out nodes;
+- the gradient against finite differences;
+- the CLI (learn-selfplay, hl-report, weights-ab, hl-guards).
+
+Not done here:
+- [HOLE] lam / beta have not been fitted on real LLM evaluations; that needs the M8 play loop's `observe_external` calls.
+- [HOLE] The online learner is not shown to make play stronger. Its versions predict their own search better, but at 8 games of 1 s/move they are level with default-v1. One step of expert iteration from default-v1's own self-play did better (0.65, borderline).
+- [FUTURE] A value-model slot in the C leaf evaluation. Refits during a long search (MISSION.md section 5 says "periodically during search"; here only after decisions). A/Bs at the mission's time control and against the KataGo ladder (M9).
+- The regression positions come from default-v1's own searches, so they favour default-v1. They proved a useful brake on drift, not a strength measure.

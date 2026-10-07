@@ -1,17 +1,23 @@
 #!/bin/bash
-# Stop what scripts/arena_up.sh started: the arena (with its kg-client), the keepalive, and every
-# kgservice Slurm job for the model.  Then show that no such job or process is left.
+# Stop what scripts/arena_up.sh started for one profile: the arena (with its kg-client), the keepalive,
+# and every kgservice Slurm job for the profile's model.  Then show that no such job or process is left.
+#
+#   scripts/arena_down.sh [--profile kata1|ladder] [--dry-run]
+# Same profiles and environment overrides as arena_up.sh (scripts/arena_env.sh).  The other profile's
+# arena, keepalive and jobs are left alone and listed separately.
 set -uo pipefail
 M47=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
-ARENA_DIR=${ARENA_DIR:-/data/haiyangw/claude/Move47/runs/move47/arena}
-MODEL=${MODEL:-engines/models/kata1-tf3-b11c768-s11003M-d5973M-7gres.bin.gz}
+# shellcheck source=arena_env.sh
+source "$M47/scripts/arena_env.sh"
+arena_args "$@"
 cd "$M47"
-
-alive() {
-  local pid
-  pid=$(cat "$1" 2>/dev/null) || return 1
-  [[ $pid =~ ^[0-9]+$ ]] && tr '\0' ' ' 2>/dev/null <"/proc/$pid/cmdline" | grep -q -- "$2"
-}
+name="kgb-$(basename "$MODEL" .bin.gz)"
+if ((DRY_RUN)); then
+  arena_show
+  echo "would stop: arena ($ARENA_DIR/arena.pid), keepalive ($ARENA_DIR/keepalive.pid);" \
+       "scancel kgservice jobs named $name"
+  exit 0
+fi
 
 # stop NAME PATTERN: SIGTERM the process group (arena_up made each process a session/group leader),
 # SIGKILL after 20 s
@@ -37,13 +43,15 @@ stop() {
 stop arena "goarena serve"            # first: no new engine queries
 stop keepalive "kgservice keepalive"  # then: no successor jobs
 python3 -m kgservice stop --model "$MODEL"
-name="kgb-$(basename "$MODEL" .bin.gz)"
 for _ in $(seq 60); do
   [[ -z $(squeue -h -u "$USER" -n "$name" -o %i 2>/dev/null) ]] && break
   sleep 1
 done
 echo "--- squeue -u $USER"
 squeue -u "$USER"
-echo "--- processes matching goarena|kgservice (none expected)"
-pat='goarena|kgservice'
-pgrep -fa "$pat" | grep -v -e "pgrep -fa" -e "arena_down.sh" || echo "none"
+echo "--- processes of this profile (none expected): goarena on port $PORT, keepalive/client/backend for $(basename "$MODEL")"
+mine="goarena serve.*--port $PORT( |\$)|kgservice (keepalive|client|backend).*$(basename "$MODEL")"
+pgrep -fa -- "$mine" | grep -v -e "pgrep -fa" -e "arena_down.sh" -e "grep -" || echo "none"
+others=$(pgrep -fa 'goarena|kgservice' | grep -v -e "pgrep -fa" -e "arena_down.sh" -e "grep -" | grep -Ev -- "$mine")
+[[ -n $others ]] && { echo "--- other goarena/kgservice processes (other profiles, left running)"; echo "$others"; }
+exit 0

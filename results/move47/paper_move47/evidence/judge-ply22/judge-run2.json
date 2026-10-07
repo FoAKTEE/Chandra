@@ -1,0 +1,209 @@
+{
+ "tool": "move47/scripts/judge_position.py",
+ "sgf": "runs/move47/mcts-calib-20261007/pilot-game.sgf",
+ "sgf_sha256": "6749d30963863d403b0d547ffb348852fca142b675ebbb8bb4e526573703ca3f",
+ "upto": 22,
+ "size": 9,
+ "komi": 7.5,
+ "to_play": "B",
+ "model": "kata1-tf3-b11c768-s11003M-d5973M-7gres.bin.gz",
+ "engine_bin": "kg-client",
+ "values": "side to move; loss = best lead - lead after the move (points)",
+ "moves": [
+  "H7",
+  "E6",
+  "C2"
+ ],
+ "date": "2026-10-07 08:57:44",
+ "seconds": 1.7,
+ "results": [
+  {
+   "visits": 1600,
+   "child_visits": 400,
+   "seconds": 0.1,
+   "engine_best": "G8",
+   "engine_lead": -16.76,
+   "engine_top": [
+    {
+     "move": "G8",
+     "visits": 467,
+     "winrate": 0.0,
+     "lead": -16.757,
+     "prior": 0.444
+    },
+    {
+     "move": "C2",
+     "visits": 289,
+     "winrate": 0.0,
+     "lead": -16.998,
+     "prior": 0.082
+    },
+    {
+     "move": "H7",
+     "visits": 92,
+     "winrate": 0.0,
+     "lead": -18.716,
+     "prior": 0.107
+    },
+    {
+     "move": "G3",
+     "visits": 56,
+     "winrate": 0.0,
+     "lead": -20.083,
+     "prior": 0.13
+    },
+    {
+     "move": "G4",
+     "visits": 98,
+     "winrate": 0.0,
+     "lead": -19.099,
+     "prior": 0.086
+    },
+    {
+     "move": "D2",
+     "visits": 111,
+     "winrate": 0.0,
+     "lead": -18.102,
+     "prior": 0.034
+    },
+    {
+     "move": "E7",
+     "visits": 66,
+     "winrate": 0.0,
+     "lead": -18.466,
+     "prior": 0.025
+    },
+    {
+     "move": "H4",
+     "visits": 93,
+     "winrate": 0.0,
+     "lead": -18.083,
+     "prior": 0.014
+    }
+   ],
+   "graded": {
+    "H7": {
+     "move": "H7",
+     "engine_rank": 3,
+     "engine_policy": 0.107487693,
+     "engine_policy_rank": 3,
+     "lead_after": -18.14,
+     "loss": 1.38,
+     "winrate_after": 0.0004
+    },
+    "E6": {
+     "move": "E6",
+     "engine_rank": 14,
+     "engine_policy": 0.00366701209,
+     "engine_policy_rank": 13,
+     "lead_after": -19.63,
+     "loss": 2.88,
+     "winrate_after": 0.0002
+    },
+    "C2": {
+     "move": "C2",
+     "engine_rank": 2,
+     "engine_policy": 0.0818478987,
+     "engine_policy_rank": 5,
+     "lead_after": -16.35,
+     "loss": -0.41,
+     "winrate_after": 0.0008
+    }
+   }
+  },
+  {
+   "visits": 20000,
+   "child_visits": 5000,
+   "seconds": 1.5,
+   "engine_best": "G8",
+   "engine_lead": -16.69,
+   "engine_top": [
+    {
+     "move": "G8",
+     "visits": 5408,
+     "winrate": 0.0,
+     "lead": -16.685,
+     "prior": 0.444
+    },
+    {
+     "move": "C2",
+     "visits": 3951,
+     "winrate": 0.0,
+     "lead": -16.751,
+     "prior": 0.082
+    },
+    {
+     "move": "H7",
+     "visits": 918,
+     "winrate": 0.0,
+     "lead": -18.613,
+     "prior": 0.107
+    },
+    {
+     "move": "G4",
+     "visits": 1041,
+     "winrate": 0.0,
+     "lead": -18.919,
+     "prior": 0.086
+    },
+    {
+     "move": "G3",
+     "visits": 499,
+     "winrate": 0.0,
+     "lead": -20.04,
+     "prior": 0.13
+    },
+    {
+     "move": "D2",
+     "visits": 966,
+     "winrate": 0.001,
+     "lead": -18.634,
+     "prior": 0.034
+    },
+    {
+     "move": "E7",
+     "visits": 680,
+     "winrate": 0.0,
+     "lead": -18.554,
+     "prior": 0.025
+    },
+    {
+     "move": "C7",
+     "visits": 682,
+     "winrate": 0.0,
+     "lead": -19.061,
+     "prior": 0.02
+    }
+   ],
+   "graded": {
+    "H7": {
+     "move": "H7",
+     "engine_rank": 3,
+     "engine_policy": 0.107487693,
+     "engine_policy_rank": 3,
+     "lead_after": -18.67,
+     "loss": 1.99,
+     "winrate_after": 0.0005
+    },
+    "E6": {
+     "move": "E6",
+     "engine_rank": 15,
+     "engine_policy": 0.00366701209,
+     "engine_policy_rank": 13,
+     "lead_after": -19.63,
+     "loss": 2.95,
+     "winrate_after": 0.0002
+    },
+    "C2": {
+     "move": "C2",
+     "engine_rank": 2,
+     "engine_policy": 0.0818478987,
+     "engine_policy_rank": 5,
+     "lead_after": -16.66,
+     "loss": -0.02,
+     "winrate_after": 0.0003
+    }
+   }
+  }
+ ]
+}

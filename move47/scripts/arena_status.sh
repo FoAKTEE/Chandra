@@ -1,11 +1,15 @@
 #!/bin/bash
-# Show the state of the GPU arena started by scripts/arena_up.sh (never prints the tokens).
+# Show the state of a GPU arena started by scripts/arena_up.sh (never prints the tokens).
+#
+#   scripts/arena_status.sh [--profile kata1|ladder]
+# Same profiles and environment overrides as arena_up.sh (scripts/arena_env.sh).
 set -uo pipefail
 M47=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
-ARENA_DIR=${ARENA_DIR:-/data/haiyangw/claude/Move47/runs/move47/arena}
-HOST=${HOST:-127.0.0.1}
-PORT=${PORT:-8765}
+# shellcheck source=arena_env.sh
+source "$M47/scripts/arena_env.sh"
+arena_args "$@"
 cd "$M47"
+arena_show
 for p in "keepalive:kgservice keepalive" "arena:goarena serve"; do
   name=${p%%:*} pat=${p#*:}
   pid=$(cat "$ARENA_DIR/$name.pid" 2>/dev/null)

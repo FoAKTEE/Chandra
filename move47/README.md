@@ -62,6 +62,19 @@ GOARENA_ADMIN_TOKEN=$(cat /data/haiyangw/claude/Move47/runs/move47/arena/admin.t
 scripts/arena_down.sh     # arena (+ its kg-client), keepalive, scancel the model's jobs; lists leftovers
 ```
 
+Profiles (`scripts/arena_env.sh`, sourced by all three scripts; `--profile NAME` or `$ARENA_PROFILE`; `--dry-run`
+on `arena_up.sh` / `arena_down.sh` prints the settings and commands and starts nothing):
+
+| profile | net | tiers | port | arena dir |
+|---|---|---|---|---|
+| `kata1` (default, unchanged) | kata1-tf3-b11c768 | `config/tiers-9x9-kata1.json` | 8765 | `runs/move47/arena` |
+| `ladder` (calibrated, lv1-lv8 rated) | g170e-b10c128 | `config/tiers-9x9.json` | 8766 | `runs/move47/arena-ladder` |
+
+Both can run at once (each its own keepalive, backend job, pid files, tokens and db; `arena_down.sh --profile X`
+stops only X and lists the other profile's processes separately). Environment variables still win over the
+profile: `ARENA_DIR MODEL CONFIG TIERS HOST PORT REFEREE_VISITS REVIEW_VISITS ADJUDICATE` (`ADJUDICATE=""` = off).
+Tests: `tests/test_arena_profiles.py` (dry runs: the default is unchanged, the ladder profile, overrides, refusals).
+
 State lives outside the Chandra tree in `/data/haiyangw/claude/Move47/runs/move47/arena/` (dir 700):
 `arena.db`, `admin.token` and `viewer.token` (mode 600, created once, passed to the server through
 the environment only, so they never appear in argv, logs or `ps`), `arena.log`, `keepalive.log`,
@@ -565,3 +578,59 @@ rather than judging which is right, and lam fitted against the same target leans
 a stand-in is used for selection only (nothing is backed up with it); re-calibration corrects each value's
 one-time backup exactly, while values a simulation carried up from an evaluated leaf keep their old map; the
 decision thresholds (top 4, 20% share, extension 120 s) are not tuned.
+
+## Offline judge and the code-only ablation (node `move47::mcts-ablation`)
+
+MISSION.md section 5, node `move47::mcts-ablation` (M9a): measurement tools and a small code-only baseline. The
+full system (model + MCTS + learned heuristics) is measured later, in `move47::mcts-strength`.
+
+**Offline judge** `scripts/judge_position.py`: grades given moves of an SGF position with the strong net through
+kgservice (`bin/kg-client`; a live backend is needed, e.g. from `scripts/arena_up.sh`). Per visit count it prints
+JSON: KataGo's best move and lead (side to move), the top moves, and for each graded move its rank in KataGo's
+list, its policy prior and rank, and the points lost (best lead minus the lead after the move, from a search of the
+child position with a quarter of the visits, at least 100; `gotree.judge.judge_root`). Measurement only: its
+output never enters a search, prompt, memory or weights.
+
+```bash
+python3 scripts/judge_position.py --sgf game.sgf --upto 22 --moves H7,E6,C2 --visits 1600,20000 \
+    [--path-root <dir: print paths relative to it>] [--out FILE]
+```
+
+**Ablation driver** `scripts/ablation_play.py --run <dir outside Chandra> --plan plan.json`: parallel game
+streams, each a list of segments (one arena run per segment: arena, opponent, games, optional colour), every game
+exactly `mcts play --llm off --learn` (mcts.play's parser, Player and play_games), but all streams share one
+`OnlineLearner` in `<run>/hl` with update() serialised. Separate `mcts play --learn` processes cannot share one
+learner directory: each process numbers new versions from its own memory, so two processes can write the same
+`weights-vNNN.json` (reported to the owner of `mcts/hl`). `--dry-run` prints each segment's settings. Report:
+`scripts/ablation_report.py <run> [--format md|json] [--path-root DIR] [--out-dir DIR]` (per opponent: W-L,
+Elo with a 95% interval from goarena.rating over the rated games, review point loss per move, blunders, match
+rate, seconds and simulations per move, the weights version per game; the v1 pilot and the ply-22 judge for
+comparison).
+
+**Measured** (2026-10-07, host anta; run dir `runs/move47/mcts-ablation-20261007/` with `plan.json` and
+`launch.sh`; evidence `results/move47/paper_move47/evidence/mcts-ablation-20261007/` and `.../judge-ply22/`).
+Code-only MCTS v2 with online learning, 30 s/move, 16 search threads per game, two parallel streams (lv7 x6 then
+k1-full as Black; lv8 x6 then k1-full as White), one shared learner; arenas: `ladder` (lv7/lv8, b10c128 referee
+and reviewer) and `kata1` (k1-full, strong-net reviewer); adjudication on in both. 14 games, 2 h 23 min wall.
+
+| opponent | W-L | Elo, 95% CI | point loss / move (reviewer) | blunders (>= 5) | match rate |
+|---|---|---|---|---|---|
+| lv7 (1850) + lv8 (2064), pooled | 1-11 | 1596 [1320, 1872] | | | |
+| lv7 | 1-5 | | 1.607 over 212 moves (b10c128) | 20 | 0.259 |
+| lv8 | 0-6 | | 2.992 over 127 moves (b10c128) | 26 | 0.197 |
+| k1-full | 0-2 (B 3.877, W 1.008 per move) | | 2.377 over 44 moves (kata1) | 4 | 0.318 |
+| v1 pilot vs k1-full (Opus 5.5 xhigh / gotree, 737 s and 10.77 USD per move) | 0-1 | | 1.214 over 19 moves (kata1) | 0 | 0.263 |
+
+- The Elo is the arena's own fit (goarena.rating, prior centred on the opponents' mean Elo, sd 350) over the 12 rated
+  games; with one win it still leans on that prior, and the tiers' own calibration errors (lv7 +-89, lv8 +-107) are
+  not propagated.
+- The learner accepted 157 of 383 updates (default-v1 -> hl-v157; every game's first and last version are in the
+  report). On the run's final held-out nodes: cross-entropy 2.583 -> 2.277, top-1 0.33 -> 0.41; regression CE
+  2.682 -> 2.595; guards pass. The one win came at hl-v119..hl-v137; 12 games say nothing about a trend.
+- 87 of 383 moves searched longer than 31 s (up to 59 s): the eviction pause at the 20M-node cap counts in the
+  move's search time.
+
+Tests (no GPU, no model): `tests/test_judge_position.py` (the judge on `tests/fake_katago.py`: output fields, loss =
+best lead minus lead after, illegal and bad moves), `tests/test_ablation_driver.py` (two streams against two
+in-process arenas share one learner: one update sequence over both streams' decisions, colours, tokens kept out
+of the segment metadata; the report reads the run back), `tests/test_arena_profiles.py` (above).

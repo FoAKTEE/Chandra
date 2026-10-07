@@ -1,0 +1,293 @@
+{
+ "position": {
+  "sgf": "runs/move47/mcts-calib-20261007/pilot-game.sgf",
+  "sgf_sha256": "6749d30963863d403b0d547ffb348852fca142b675ebbb8bb4e526573703ca3f",
+  "upto": 22,
+  "to_play": "B",
+  "komi": 7.5,
+  "note": "pilot game (v1 Opus 5.5 xhigh / gotree vs k1-full) after 22 plies; Black to play"
+ },
+ "moves": {
+  "H7": "MCTS v2 decision (hybrid with the model and code-only, mcts-calib smoke)",
+  "E6": "v1's actual move (ply 23 of the pilot)",
+  "C2": "engine best in the earlier ad-hoc run"
+ },
+ "model": "kata1-tf3-b11c768-s11003M-d5973M-7gres.bin.gz",
+ "tool": "move47/scripts/judge_position.py --sgf <sgf> --upto 22 --moves H7,E6,C2 --visits 1600,20000",
+ "earlier_adhoc": {
+  "20000": {
+   "best": "C2",
+   "H7": {
+    "rank": 4,
+    "loss": 1.69
+   },
+   "E6": {
+    "rank": 13,
+    "loss": 2.91
+   }
+  },
+  "1600": {
+   "H7": {
+    "loss": 2.73
+   },
+   "E6": {
+    "loss": 3.86
+   }
+  }
+ },
+ "runs": [
+  {
+   "run": 1,
+   "date": "2026-10-07 08:57:37",
+   "1600": {
+    "best": "G8",
+    "lead": -15.92,
+    "seconds": 1.4,
+    "H7": {
+     "rank": 3,
+     "loss": 2.53,
+     "policy_rank": 3
+    },
+    "E6": {
+     "rank": 14,
+     "loss": 3.68,
+     "policy_rank": 13
+    },
+    "C2": {
+     "rank": 2,
+     "loss": 0.84,
+     "policy_rank": 5
+    }
+   },
+   "20000": {
+    "best": "C2",
+    "lead": -16.69,
+    "seconds": 11.8,
+    "H7": {
+     "rank": 3,
+     "loss": 1.76,
+     "policy_rank": 3
+    },
+    "E6": {
+     "rank": 15,
+     "loss": 2.89,
+     "policy_rank": 13
+    },
+    "C2": {
+     "rank": 1,
+     "loss": 0.0,
+     "policy_rank": 5
+    }
+   }
+  },
+  {
+   "run": 2,
+   "date": "2026-10-07 08:57:44",
+   "1600": {
+    "best": "G8",
+    "lead": -16.76,
+    "seconds": 0.1,
+    "H7": {
+     "rank": 3,
+     "loss": 1.38,
+     "policy_rank": 3
+    },
+    "E6": {
+     "rank": 14,
+     "loss": 2.88,
+     "policy_rank": 13
+    },
+    "C2": {
+     "rank": 2,
+     "loss": -0.41,
+     "policy_rank": 5
+    }
+   },
+   "20000": {
+    "best": "G8",
+    "lead": -16.69,
+    "seconds": 1.5,
+    "H7": {
+     "rank": 3,
+     "loss": 1.99,
+     "policy_rank": 3
+    },
+    "E6": {
+     "rank": 15,
+     "loss": 2.95,
+     "policy_rank": 13
+    },
+    "C2": {
+     "rank": 2,
+     "loss": -0.02,
+     "policy_rank": 5
+    }
+   }
+  },
+  {
+   "run": 3,
+   "date": "2026-10-07 08:57:45",
+   "1600": {
+    "best": "G8",
+    "lead": -16.74,
+    "seconds": 0.1,
+    "H7": {
+     "rank": 3,
+     "loss": 1.68,
+     "policy_rank": 3
+    },
+    "E6": {
+     "rank": 15,
+     "loss": 2.91,
+     "policy_rank": 13
+    },
+    "C2": {
+     "rank": 2,
+     "loss": -0.09,
+     "policy_rank": 5
+    }
+   },
+   "20000": {
+    "best": "G8",
+    "lead": -16.68,
+    "seconds": 1.0,
+    "H7": {
+     "rank": 3,
+     "loss": 2.1,
+     "policy_rank": 3
+    },
+    "E6": {
+     "rank": 15,
+     "loss": 2.97,
+     "policy_rank": 13
+    },
+    "C2": {
+     "rank": 2,
+     "loss": -0.05,
+     "policy_rank": 5
+    }
+   }
+  }
+ ],
+ "summary": {
+  "1600": {
+   "best": [
+    "G8",
+    "G8",
+    "G8"
+   ],
+   "lead": [
+    -15.92,
+    -16.76,
+    -16.74
+   ],
+   "H7": {
+    "ranks": [
+     3,
+     3,
+     3
+    ],
+    "losses": [
+     2.53,
+     1.38,
+     1.68
+    ],
+    "mean_loss": 1.86,
+    "min": 1.38,
+    "max": 2.53
+   },
+   "E6": {
+    "ranks": [
+     14,
+     14,
+     15
+    ],
+    "losses": [
+     3.68,
+     2.88,
+     2.91
+    ],
+    "mean_loss": 3.16,
+    "min": 2.88,
+    "max": 3.68
+   },
+   "C2": {
+    "ranks": [
+     2,
+     2,
+     2
+    ],
+    "losses": [
+     0.84,
+     -0.41,
+     -0.09
+    ],
+    "mean_loss": 0.11,
+    "min": -0.41,
+    "max": 0.84
+   }
+  },
+  "20000": {
+   "best": [
+    "C2",
+    "G8",
+    "G8"
+   ],
+   "lead": [
+    -16.69,
+    -16.69,
+    -16.68
+   ],
+   "H7": {
+    "ranks": [
+     3,
+     3,
+     3
+    ],
+    "losses": [
+     1.76,
+     1.99,
+     2.1
+    ],
+    "mean_loss": 1.95,
+    "min": 1.76,
+    "max": 2.1
+   },
+   "E6": {
+    "ranks": [
+     15,
+     15,
+     15
+    ],
+    "losses": [
+     2.89,
+     2.95,
+     2.97
+    ],
+    "mean_loss": 2.94,
+    "min": 2.89,
+    "max": 2.97
+   },
+   "C2": {
+    "ranks": [
+     1,
+     2,
+     2
+    ],
+    "losses": [
+     0.0,
+     -0.02,
+     -0.05
+    ],
+    "mean_loss": -0.02,
+    "min": -0.05,
+    "max": 0.0
+   }
+  }
+ },
+ "notes": [
+  "Runs 2 and 3 followed run 1 on the same backend within a minute; its NN cache (2^21 entries) made them fast (0.1-1.5 s), so they are not independent cold searches.",
+  "C2 and G8 are tied as the engine's best at 20000 visits (C2's loss vs G8 -0.05 to 0.00 points), so the best move flips between runs.",
+  "Offline measurement only: nothing here enters a search, prompt, memory or weights."
+ ]
+}

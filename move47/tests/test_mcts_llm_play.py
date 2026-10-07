@@ -19,6 +19,7 @@ from gotree.position import Position, coord, point
 from gotree.workers import MockWorker
 from harness.arena_client import ArenaClient
 from harness.runner import ADAPTERS
+from mcts.decide import RULES
 from mcts.llm import LLMConfig, LLMService
 from mcts.play import Player, make_learner, play_games
 from mcts.tree import MCTSConfig
@@ -160,7 +161,13 @@ def test_play_loop_keeps_the_tree_across_moves_and_records_each_move(tmp_path):
         assert n is not None and n > 0 and r["root_n_start"] == n
     assert all(r["root_n"] >= r["root_n_start"] + 1500 for r in rec)
     for r in rec:
-        assert r["move"] == r["root_table"][0]["move"] and r["root_table"][0]["n"] == max(x["n"] for x in r["root_table"])
+        top, rule = r["root_table"][0], r["decision"]["rule"]
+        assert top["n"] == max(x["n"] for x in r["root_table"]) and rule in RULES
+        if rule == "evaluated_among_top":           # the leader had no model value: an evaluated top candidate
+            chosen = next(x for x in r["root_table"] if x["move"] == r["move"])
+            assert chosen["evaluated"] and not top["evaluated"]
+        else:
+            assert r["move"] == top["move"]
         assert {"prior", "prior_learned", "llm_prior", "pv"} <= set(r["root_table"][0]) and r["weights"] == "default-v1"
         assert {"launched", "ok", "failed", "cache_hits", "cost_usd", "applied", "queue", "running"} <= set(r["llm"])
     assert sum(r["llm"]["launched"] for r in rec) >= 4 and rec[-1]["llm_root"]["evaluated"]

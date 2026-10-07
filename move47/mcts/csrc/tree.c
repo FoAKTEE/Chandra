@@ -13,6 +13,13 @@
  *   - one mutex guards the transposition table and node creation (a lookup-or-insert per new
  *     leaf, ~0.1 us), another the event queue; nothing else is locked;
  *   - eviction / compaction (Python) only runs while no thread is searching.
+ *
+ * Model values (mcts-calib): a child without an external value of its own (nx = 0) is compared with
+ * its siblings through a stand-in external value (P_STANDIN): the mean external value of its
+ * evaluated siblings, else the negated external value of its parent (which is, recursively, its
+ * own or its parent's stand-in), so that Q = (1 - lam) * X + lam * Q_playout uses the same X scale
+ * for every sibling.  At the root, moves the model proposed get minimum visits (a share of the
+ * root's visits with a floor) and the priors can be mixed with uniform noise (v1 root breadth).
  */
 #include <stdio.h>
 #include <time.h>
@@ -20,7 +27,7 @@
 #include "mc.h"
 
 enum { ST_NEW = 0, ST_EXPANDING = 1, ST_EXPANDED = 2, ST_TERMINAL = 3 };
-enum { FL_HOOKED = 1, FL_EXT = 2 };
+enum { FL_HOOKED = 1, FL_EXT = 2, FL_EVCHILD = 4 };   /* EVCHILD: a child has an external value */
 
 /* counters (int64, shared with Python) */
 enum { C_NODES, C_EDGES, C_SIMS, C_SIMS_STARTED, C_PLAYOUTS, C_FULL, C_EV_DROPPED, C_EXPANSIONS,
@@ -28,7 +35,9 @@ enum { C_NODES, C_EDGES, C_SIMS, C_SIMS_STARTED, C_PLAYOUTS, C_FULL, C_EV_DROPPE
        C_NCTR = 16 };
 /* parameters (double, shared with Python) */
 enum { P_CPUCT, P_FPU, P_PW_K0, P_PW_C, P_PW_ALPHA, P_PW_ROOT, P_LAM, P_EXPAND_VISITS, P_NTHR, P_HOOK,
-       P_HOOK_DEPTH, P_PLAYOUTS, P_MAX_DEPTH, P_STORE, P_PLAYOUT_MAXMOVES, P_NPRM = 32 };
+       P_HOOK_DEPTH, P_PLAYOUTS, P_MAX_DEPTH, P_STORE, P_PLAYOUT_MAXMOVES, P_STANDIN, P_ROOT_NOISE,
+       P_ROOT_MIN_FRAC, P_ROOT_MIN_FLOOR, P_ROOT_MIN_FRAC_X, P_ROOT_MIN_FLOOR_X, P_NPRM = 32 };
+/* P_STANDIN: 0 off, 1 the parent's (ancestor's) external value, 2 the evaluated siblings' mean, else 1 */
 /* reasons mc_tree_run returns */
 enum { R_STOP = 1, R_TIME = 2, R_SIMS = 3, R_FULL = 4 };
 
@@ -82,6 +91,10 @@ typedef struct {
     MCEvent* ev;
     int32_t ev_cap, ev_head, ev_count;
     int64_t deadline_ns, sims_target;
+    /* root breadth: class per move (gotree point, pass at MC_MAXMOVES): 0 none, 1 candidate
+       (model-proposed), 2 explore (unconventional / scout); root_ncls = number of classed moves */
+    uint8_t root_cls[MC_MAXMOVES + 1];
+    int32_t root_ncls;
 } MCTree;
 
 typedef struct {
@@ -211,23 +224,79 @@ static inline int is_excluded(const MCThread* th, int64_t e) {
 }
 
 /* PUCT over the admitted edges (progressive widening in prior order; every edge at the root unless
-   pw_root, and at nodes that received external priors) */
-static int64_t select_edge(const MCTree* t, const MCThread* th, int32_t node, int is_root) {
+   pw_root, and at nodes that received external priors).  sv: the external value (stand-in) of the
+   node itself for its side to move, NAN if none; *s_out: the stand-in value of its children
+   without an external value (side to move at the children), NAN if none. */
+static int64_t select_edge(const MCTree* t, const MCThread* th, int32_t node, int is_root, double sv,
+                           double* s_out) {
     const int64_t e0 = t->estart[node];
     const int ne = t->nedges[node];
     const int32_t nn = LD(t->n[node]);
     const double np = (double)nn + LD(t->vl[node]);
     const double sq = sqrt(np > 1 ? np : 1);
+    const double lam = t->prm[P_LAM];
+    const int standin = (int)t->prm[P_STANDIN];
     int adm = ne;
     if ((!is_root || t->prm[P_PW_ROOT] > 0) && !(LD(t->flags[node]) & FL_EXT)) {
         double a = t->prm[P_PW_K0] + t->prm[P_PW_C] * pow((double)nn, t->prm[P_PW_ALPHA]);
         if (a < ne) adm = (int)a;
         if (adm < 1) adm = 1;
     }
+    /* stand-in for the children without an external value */
+    double S = NAN;
+    if (standin > 0) {
+        if (standin >= 2 && (LD(t->flags[node]) & FL_EVCHILD)) {
+            double sum = 0;
+            int cnt = 0;
+            for (int i = 0; i < ne; i++) {
+                const int32_t c = LD(t->e_child[e0 + i]);
+                if (c < 0) continue;
+                const int32_t nxc = LD(t->nx[c]);
+                if (nxc > 0) {
+                    sum += ldd(&t->wx[c]) / nxc;
+                    cnt++;
+                }
+            }
+            if (cnt) S = sum / cnt;
+        }
+        if (isnan(S) && !isnan(sv)) S = -sv;
+    }
+    *s_out = S;
+    /* root breadth: a classed root move below its minimum visits is taken first (fewest visits,
+       then the higher prior), as v1's root_min_visits */
+    if (is_root && t->root_ncls > 0) {
+        const double need1 = fmax(t->prm[P_ROOT_MIN_FLOOR], t->prm[P_ROOT_MIN_FRAC] * nn);
+        const double need2 = fmax(t->prm[P_ROOT_MIN_FLOOR_X], t->prm[P_ROOT_MIN_FRAC_X] * nn);
+        int64_t fb = -1;
+        double fh = 1e300;
+        float fp = -1.0f;
+        for (int i = 0; i < adm; i++) {
+            const int64_t e = e0 + i;
+            const int16_t m = t->e_move[e];
+            const uint8_t cl = t->root_cls[m < 0 ? MC_MAXMOVES : m];
+            if (!cl) continue;
+            if (th->nexcl && is_excluded(th, e)) continue;
+            const int32_t c = LD(t->e_child[e]);
+            const double have = (double)LD(t->e_n[e]) + (c >= 0 ? LD(t->vl[c]) : 0);
+            if (have >= (cl == 1 ? need1 : need2)) continue;
+            const float p = ldf(&t->e_prior[e]);
+            if (have < fh || (have == fh && p > fp)) {
+                fb = e;
+                fh = have;
+                fp = p;
+            }
+        }
+        if (fb >= 0) return fb;
+    }
     int valid;
-    const double qp = node_q(t, node, 0, &valid);
-    const double fpu_v = (valid ? qp : 0.0) - t->prm[P_FPU];
+    double qn = node_q(t, node, 0, &valid);
+    if (standin > 0 && !isnan(sv) && LD(t->nx[node]) == 0) {   /* the node's own Q on the same footing */
+        qn = valid ? (1.0 - lam) * sv + lam * qn : sv;
+        valid = 1;
+    }
+    const double fpu_v = (valid ? qn : 0.0) - t->prm[P_FPU];
     const double cp = t->prm[P_CPUCT];
+    const double noise = is_root ? t->prm[P_ROOT_NOISE] : 0.0;
     int64_t best = -1;
     double bs = -1e300;
     for (int i = 0; i < adm; i++) {
@@ -238,10 +307,13 @@ static int64_t select_edge(const MCTree* t, const MCThread* th, int32_t node, in
         int vlc = 0;
         if (c >= 0) {
             double qc = node_q(t, c, 1, &valid);
+            if (valid && !isnan(S) && LD(t->nx[c]) == 0) qc = (1.0 - lam) * S + lam * qc;
             if (valid) q = -qc;
             vlc = LD(t->vl[c]);
         }
-        const double sc = q + cp * ldf(&t->e_prior[e]) * sq / (1.0 + LD(t->e_n[e]) + vlc);
+        double pr = ldf(&t->e_prior[e]);
+        if (noise > 0) pr = (1.0 - noise) * pr + noise / adm;
+        const double sc = q + cp * pr * sq / (1.0 + LD(t->e_n[e]) + vlc);
         if (sc > bs) {
             bs = sc;
             best = e;
@@ -354,6 +426,11 @@ static int simulate(MCTree* t, MCThread* th) {
     const int store = t->prm[P_STORE] > 0;
 
     ADD(t->vl[node], 1);
+    double sv = NAN;   /* external value (or stand-in) of the current node, side to move there */
+    if ((int)t->prm[P_STANDIN] > 0) {
+        const int32_t nx0 = LD(t->nx[node]);
+        if (nx0 > 0) sv = ldd(&t->wx[node]) / nx0;
+    }
     for (;;) {
         uint8_t st = __atomic_load_n(&t->state[node], __ATOMIC_ACQUIRE);
         if (st == ST_TERMINAL) {
@@ -381,8 +458,9 @@ static int simulate(MCTree* t, MCThread* th) {
         if (st == ST_EXPANDING || depth >= maxd) break;
         th->nexcl = 0;
         int64_t e;
+        double S = NAN;
         for (;;) {
-            e = select_edge(t, th, node, depth == 0);
+            e = select_edge(t, th, node, depth == 0, sv, &S);
             if (e < 0) break;
             int bp = mc_bp(b, t->e_move[e]);
             if (bp == MC_PASS) {
@@ -434,6 +512,10 @@ static int simulate(MCTree* t, MCThread* th) {
         th->phash[th->npath] = b->hash;
         th->npath++;
         ADD(t->vl[c], 1);
+        {
+            const int32_t nxc = LD(t->nx[c]);
+            sv = nxc > 0 ? ldd(&t->wx[c]) / nxc : S;
+        }
         node = c;
         depth++;
     }
@@ -485,6 +567,9 @@ static int simulate(MCTree* t, MCThread* th) {
             if (hx) {
                 ADD(t->nx[nd], 1);
                 add_d(&t->wx[nd], vx);
+                const int32_t pa = d > 0 ? th->pnode[d - 1] : -1;
+                if (pa >= 0 && !(LD(t->flags[pa]) & FL_EVCHILD))
+                    __atomic_fetch_or(&t->flags[pa], (uint8_t)FL_EVCHILD, RLX);
             }
         }
         if (d > 0) ADD(t->e_n[th->pedge[d]], k);
@@ -721,10 +806,62 @@ int mc_tree_backup_ext(MCTree* t, const uint64_t* keys, int n, double v, int set
             if (i < 0) continue;
             ADD(t->nx[i], 1);
             add_d(&t->wx[i], t->to_play[i] == tp ? v : -v);
+            if (j > 0 && idx[j - 1] >= 0) __atomic_fetch_or(&t->flags[idx[j - 1]], (uint8_t)FL_EVCHILD, RLX);
             done++;
         }
     }
     return done;
+}
+
+/* a recalibrated external value: add dv (side to move at keys[n-1]) to the sums of the nodes on the
+   path that backed up the old value once, without counting a new evaluation, and store newv as the
+   node's own value.  Returns the nodes updated. */
+int mc_tree_adjust_ext(MCTree* t, const uint64_t* keys, int n, double dv, double newv) {
+    int32_t idx[MC_EV_PATH + 1];
+    if (n > MC_EV_PATH) {
+        keys += n - MC_EV_PATH;
+        n = MC_EV_PATH;
+    }
+    pthread_mutex_lock(&t->mu);
+    for (int j = 0; j < n; j++) idx[j] = tt_find(t, keys[j]);
+    pthread_mutex_unlock(&t->mu);
+    int32_t node = n > 0 ? idx[n - 1] : -1;
+    int done = 0;
+    if (node >= 0) {
+        float f = (float)newv;
+        __atomic_store(&t->vext[node], &f, RLX);
+        int8_t tp = t->to_play[node];
+        for (int j = n - 1; j >= 0; j--) {
+            int32_t i = idx[j];
+            if (i < 0 || LD(t->nx[i]) <= 0) continue;
+            add_d(&t->wx[i], t->to_play[i] == tp ? dv : -dv);
+            done++;
+        }
+    }
+    return done;
+}
+
+/* let the expansion hook fire again for node i (its request was dropped); 1 if it had fired */
+int mc_tree_rearm(MCTree* t, int32_t i) {
+    if (i < 0 || i >= LD(t->ctr[C_NODES])) return 0;
+    return (__atomic_fetch_and(&t->flags[i], (uint8_t)~FL_HOOKED, RLX) & FL_HOOKED) ? 1 : 0;
+}
+
+/* root breadth classes (see MCTree.root_cls) for the current root; replaces the previous set */
+int mc_tree_set_root_cls(MCTree* t, const int16_t* moves, const uint8_t* cls, int n) {
+    uint8_t tmp[MC_MAXMOVES + 1];
+    memset(tmp, 0, sizeof(tmp));
+    int cnt = 0;
+    for (int j = 0; j < n; j++) {
+        int m = moves[j];
+        if (m < -1 || m >= MC_MAXMOVES) continue;
+        int k = m < 0 ? MC_MAXMOVES : m;
+        if (!tmp[k] && cls[j]) cnt++;
+        tmp[k] = cls[j];
+    }
+    for (int k = 0; k <= MC_MAXMOVES; k++) __atomic_store_n(&t->root_cls[k], tmp[k], RLX);
+    __atomic_store_n(&t->root_ncls, cnt, RLX);
+    return cnt;
 }
 
 /* info: node depth n npath; returns 1 if an event was popped */
@@ -777,6 +914,36 @@ int64_t mc_tree_mark(MCTree* t, int32_t root, uint8_t* mark) {
         for (int a = 0; a < t->nedges[i]; a++) {
             int32_t c = t->e_child[e0 + a];
             if (c >= 0 && !mark[c]) {
+                mark[c] = 1;
+                stack[sp++] = c;
+            }
+        }
+    }
+    free(stack);
+    return cnt;
+}
+
+/* like mc_tree_mark, but safe during a search: nodes with an index >= nn (created after the caller
+   sized mark) are skipped; returns the count marked */
+int64_t mc_tree_reach(MCTree* t, int32_t root, uint8_t* mark, int64_t nn) {
+    int64_t cnt = 0;
+    memset(mark, 0, (size_t)nn);
+    int32_t* stack = malloc(sizeof(int32_t) * (size_t)(nn + 1));
+    if (!stack) return -1;
+    int64_t sp = 0;
+    if (root >= 0 && root < nn) {
+        stack[sp++] = root;
+        mark[root] = 1;
+    }
+    while (sp) {
+        int32_t i = stack[--sp];
+        cnt++;
+        if (__atomic_load_n(&t->state[i], __ATOMIC_ACQUIRE) != ST_EXPANDED) continue;
+        int64_t e0 = t->estart[i];
+        int ne = t->nedges[i];
+        for (int a = 0; a < ne; a++) {
+            int32_t c = __atomic_load_n(&t->e_child[e0 + a], __ATOMIC_ACQUIRE);
+            if (c >= 0 && c < nn && !mark[c]) {
                 mark[c] = 1;
                 stack[sp++] = c;
             }

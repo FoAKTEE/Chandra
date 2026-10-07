@@ -19,6 +19,19 @@ Hooks (for the later nodes M7 / M8):
     keyword arguments) receives samples from well-visited nodes after every search.
   * ``weights`` may be a provider (``get() -> Weights``); it is asked at the start of every search
     and a new version is used from then on (new expansions and all playouts), without a restart.
+
+Model values (node move47::mcts-calib):
+  * a node without an external value of its own is compared with its siblings through a stand-in
+    external value (``standin``): the mean external value of its evaluated siblings, else the
+    negated value of its parent (recursively the nearest evaluated ancestor, sign by side to move);
+  * external values enter calibrated, ``sigmoid(calib_a * logit(v) + calib_b)`` (identity by
+    default; a weight file's params ``calib_a`` / ``calib_b`` or ``set_calibration`` change it, and
+    the values already in the tree are re-calibrated);
+  * root breadth: ``set_root_breadth({move: "candidate" | "explore"})`` gives model-proposed root
+    moves minimum visits (``root_min_frac`` of the root's visits, at least ``root_min_floor``) and
+    ``root_noise`` mixes uniform noise into the root priors (v1 root breadth);
+  * ``rearm(key)`` lets a node's hook fire again, ``in_subtree(key)`` asks whether a node is reachable
+    from the current root, ``searching`` tells whether a search is running.
 """
 from __future__ import annotations
 
@@ -36,6 +49,8 @@ import numpy as np
 
 from gotree.position import IllegalMove, Position, coord
 
+import math
+
 from ._lib import BOARD_BYTES, EV_PATH_MAX, N_FEATURES, lib
 from .board import Board, Move, to_point
 from .features import spec_id
@@ -43,12 +58,16 @@ from .weights import Weights, as_provider
 
 # keep in sync with csrc/tree.c
 ST_NEW, ST_EXPANDING, ST_EXPANDED, ST_TERMINAL = 0, 1, 2, 3
-FL_HOOKED, FL_EXT = 1, 2
+FL_HOOKED, FL_EXT, FL_EVCHILD = 1, 2, 4
 (C_NODES, C_EDGES, C_SIMS, C_SIMS_STARTED, C_PLAYOUTS, C_FULL, C_EV_DROPPED, C_EXPANSIONS, C_SUPERKO,
  C_DEPTH_SUM, C_DEPTH_MAX, C_TERMINAL, C_UNSTORED, C_EVENTS, C_PLAYOUT_NS, C_EXPAND_NS) = range(16)
 N_CTR = 16
 (P_CPUCT, P_FPU, P_PW_K0, P_PW_C, P_PW_ALPHA, P_PW_ROOT, P_LAM, P_EXPAND_VISITS, P_NTHR, P_HOOK, P_HOOK_DEPTH,
- P_PLAYOUTS, P_MAX_DEPTH, P_STORE, P_PLAYOUT_MAXMOVES) = range(15)
+ P_PLAYOUTS, P_MAX_DEPTH, P_STORE, P_PLAYOUT_MAXMOVES, P_STANDIN, P_ROOT_NOISE, P_ROOT_MIN_FRAC, P_ROOT_MIN_FLOOR,
+ P_ROOT_MIN_FRAC_X, P_ROOT_MIN_FLOOR_X) = range(21)
+STANDIN = {"off": 0, "ancestor": 1, "siblings": 2}
+BREADTH = {"candidate": 1, "explore": 2}
+BREADTH_NAME = {v: k for k, v in BREADTH.items()}
 N_PRM = 32
 R_STOP, R_TIME, R_SIMS, R_FULL = 1, 2, 3, 4
 REASONS = {R_STOP: "stop", R_TIME: "time", R_SIMS: "sims", R_FULL: "full"}
@@ -59,6 +78,16 @@ NODE_FIELDS = (("key", np.uint64), ("n", np.int32), ("w", np.float64), ("nx", np
 EDGE_FIELDS = (("e_move", np.int16), ("e_prior", np.float32), ("e_plearn", np.float32), ("e_child", np.int32),
                ("e_n", np.int32))
 TREE_FORMAT = "move47-mcts-tree/1"
+CALIB_EPS = 1e-4
+
+
+def apply_calibration(v: float, a: float, b: float) -> float:
+    """sigmoid(a * logit(v) + b) for a winrate v (v clipped to [1e-4, 1 - 1e-4]); identity for a=1, b=0."""
+    if a == 1.0 and b == 0.0:
+        return float(v)
+    v = min(1.0 - CALIB_EPS, max(CALIB_EPS, float(v)))
+    z = a * math.log(v / (1.0 - v)) + b
+    return 1.0 / (1.0 + math.exp(-z)) if z >= 0 else math.exp(z) / (1.0 + math.exp(z))
 
 
 @dataclass
@@ -86,6 +115,15 @@ class MCTSConfig:
     observe_min_visits: int = 256   # learner samples: nodes with at least this many visits
     observe_max_samples: int = 256
     early_stop: bool = False        # stop when the most-visited root move can no longer be overtaken
+    standin: str = "siblings"       # external value for a node without one: "siblings" (mean of its evaluated
+                                    # siblings, else from the parent), "ancestor" (from the parent only), "off"
+    root_noise: float = 0.0         # root priors p -> (1 - x) p + x / moves (v1 uses 0.25; the play CLIs pass it)
+    root_min_frac: float = 0.01     # root breadth: a "candidate" root move gets at least this share of the
+    root_min_floor: int = 64        # root's visits, and at least root_min_floor visits (v1 root_min_visits)
+    root_min_frac_explore: float = 0.005   # ... an "explore" move (unconventional, scout) at least this share
+    root_min_floor_explore: int = 32       # ... and at least this many (v1 root_min_visits_explore)
+    calib_a: float = 1.0            # external values enter as sigmoid(calib_a * logit(v) + calib_b)
+    calib_b: float = 0.0
     threads: int = 32
     seed: int = 0
     poll_s: float = 0.005
@@ -184,6 +222,9 @@ class MCTS:
         self._ext_pending: dict[int, dict] = {}
         self._ext_info: dict[int, dict] = {}
         self._event_info: "OrderedDict[int, tuple[Board, list[int]]]" = OrderedDict()
+        self._root_breadth: dict[Optional[int], int] = {}
+        self._root_gen = 0                               # bumped when the root or the node indices change
+        self._mark: Optional[tuple] = None               # (root_gen, time, mark array, nodes marked)
         self.searches = 0
         self.gc_runs = 0
         self.frozen = False
@@ -219,6 +260,12 @@ class MCTS:
         p[P_PLAYOUTS], p[P_MAX_DEPTH] = max(1, c.playouts_per_leaf), c.max_depth
         p[P_STORE] = 0.0 if self.frozen else 1.0
         p[P_PLAYOUT_MAXMOVES] = 3 * self.root_board.size ** 2
+        if c.standin not in STANDIN:
+            raise ValueError(f"standin must be one of {sorted(STANDIN)}, not {c.standin!r}")
+        p[P_STANDIN] = STANDIN[c.standin]
+        p[P_ROOT_NOISE] = max(0.0, min(1.0, c.root_noise))
+        p[P_ROOT_MIN_FRAC], p[P_ROOT_MIN_FLOOR] = c.root_min_frac, c.root_min_floor
+        p[P_ROOT_MIN_FRAC_X], p[P_ROOT_MIN_FLOOR_X] = c.root_min_frac_explore, c.root_min_floor_explore
 
     def _refresh_weights(self) -> bool:
         w = self.provider.get()
@@ -228,6 +275,8 @@ class MCTS:
         for k in ("lam", "beta", "playout_temperature", "prior_temperature"):
             if k in w.params:
                 setattr(self.cfg, k, float(w.params[k]))
+        if "calib_a" in w.params or "calib_b" in w.params:
+            self.set_calibration(float(w.params.get("calib_a", 1.0)), float(w.params.get("calib_b", 0.0)))
         self._push_params()
         lib.mc_tree_set_policy(self._t, w.w.ctypes.data, N_FEATURES, self.cfg.playout_temperature,
                                self.cfg.prior_temperature, int(self.cfg.ladders_playout), int(self.cfg.ladders_prior))
@@ -278,6 +327,9 @@ class MCTS:
         return None if qp is None else float(qp)
 
     def children(self, i: int) -> list[dict]:
+        """Edges of node i: move, visits, priors, child index, q (mixed winrate for the mover at i),
+        q_playout (playouts only), v_ext (the child's own external value as a winrate for the mover
+        at i; None if it has none), evaluated (has its own external value), n_ext."""
         a = self.a
         if a.state[i] != ST_EXPANDED:
             return []
@@ -287,10 +339,41 @@ class MCTS:
             c = int(a.e_child[e])
             q = self.node_q(c) if c >= 0 else None
             m = int(a.e_move[e])
+            nc = int(a.n[c]) if c >= 0 else 0
+            ve = float(a.vext[c]) if c >= 0 else math.nan
             out.append({"move": None if m < 0 else m, "n": int(a.e_n[e]), "prior": float(a.e_prior[e]),
                         "prior_learned": float(a.e_plearn[e]), "child": c,
-                        "q": None if q is None else _winrate(-q)})
+                        "q": None if q is None else _winrate(-q),
+                        "q_playout": _winrate(-float(a.w[c]) / nc) if nc else None,
+                        "v_ext": None if math.isnan(ve) else _winrate(-ve), "evaluated": not math.isnan(ve),
+                        "n_ext": int(a.nx[c]) if c >= 0 else 0})
         return out
+
+    def ext_value(self, i: int) -> Optional[float]:
+        """Node i's own external value (calibrated) as a winrate for its side to move, None if none."""
+        v = float(self.a.vext[i])
+        return None if math.isnan(v) else _winrate(v)
+
+    def standin_value(self, i: int, sv: Optional[float] = None) -> Optional[float]:
+        """The stand-in external value (in [-1, 1], side to move at i's children) that selection uses
+        for i's children without an external value (csrc/tree.c select_edge): the mean over i's
+        children that have one, else -sv where sv is i's own external value (default: its backed-up
+        mean, which is what the search uses at the root)."""
+        mode = STANDIN[self.cfg.standin]
+        if mode == 0:
+            return None
+        a = self.a
+        if mode >= 2 and int(a.flags[i]) & FL_EVCHILD and a.state[i] == ST_EXPANDED:
+            e0, ne = int(a.estart[i]), int(a.nedges[i])
+            ch = a.e_child[e0:e0 + ne]
+            ch = ch[ch >= 0]
+            nx = a.nx[ch]
+            m = nx > 0
+            if m.any():
+                return float(np.mean(a.wx[ch[m]] / nx[m]))
+        if sv is None and a.nx[i] > 0:
+            sv = float(a.wx[i]) / int(a.nx[i])
+        return None if sv is None else -float(sv)
 
     def find(self, key: Union[int, str]) -> int:
         k = int(key, 16) if isinstance(key, str) else int(key)
@@ -310,24 +393,50 @@ class MCTS:
             seen.add(i)
         return line
 
+    def _root_rows(self) -> list[dict]:
+        """The root's children with the winrate the selection compares, by visits (ties: that winrate,
+        then the prior; best_move and root_stats share this order)."""
+        ch = self.children(self.root)
+        S = self.standin_value(self.root)
+        lam = self.cfg.lam
+        for c in ch:
+            c["q_raw"], c["standin"] = c["q"], False
+            if S is not None and c["child"] >= 0 and c["n_ext"] == 0 and c["q_playout"] is not None:
+                qc = 2.0 * (1.0 - c["q_playout"]) - 1.0          # the child's playout value, its side to move
+                c["q"], c["standin"] = _winrate(-((1.0 - lam) * S + lam * qc)), True
+        ch.sort(key=lambda c: (-c["n"], -(-1.0 if c["q"] is None else c["q"]), -c["prior"]))
+        return ch
+
     def root_stats(self, top: Optional[int] = None, pv_len: int = 10) -> list[dict]:
+        """The root's moves by visits.  q is the winrate the selection compares (for a move without an
+        external value: its playouts mixed with the stand-in value), q_raw without the stand-in,
+        q_playout playouts only, v_ext the move's own (calibrated) external value, evaluated whether it
+        has one, standin whether q used the stand-in, breadth its root-breadth class."""
         size = self.root_board.size
-        ch = sorted(self.children(self.root), key=lambda c: (-c["n"], -c["prior"]))
+        ch = self._root_rows()
+        breadth = self._root_breadth
         out = []
         for c in ch[:top] if top else ch:
             pv = [c["move"]] + (self.pv(c["child"], pv_len - 1) if c["child"] >= 0 and c["n"] else [])
+            mv = -1 if c["move"] is None else c["move"]
             out.append({"move": c["move"], "coord": coord(c["move"], size), "n": c["n"], "q": c["q"],
+                        "q_raw": c["q_raw"], "q_playout": c["q_playout"], "v_ext": c["v_ext"],
+                        "evaluated": c["evaluated"], "standin": c["standin"],
+                        "breadth": BREADTH_NAME.get(breadth.get(mv)),
                         "prior": c["prior"], "prior_learned": c["prior_learned"],
                         "pv": [coord(m, size) for m in pv]})
         return out
 
     def best_move(self) -> Optional[int]:
-        ch = self.children(self.root)
-        if not ch:
-            return None
-        return max(ch, key=lambda c: (c["n"], -1.0 if c["q"] is None else c["q"], c["prior"]))["move"]
+        """The most-visited root move (ties: the higher selection winrate, then the prior)."""
+        ch = self._root_rows()
+        return ch[0]["move"] if ch else None
 
-    # ------------------------------------------------------------ search
+    @property
+    def searching(self) -> bool:
+        """True while search() runs (any thread may ask)."""
+        return self._searching
+
     def stop(self) -> None:
         """Ask a running search to stop (any thread)."""
         self._stop_req = True
@@ -551,22 +660,148 @@ class MCTS:
             pra = np.array(pr, dtype=np.float64)
             beta = self.cfg.beta if req.get("beta") is None else float(req["beta"])
             out["matched"] = int(lib.mc_tree_merge_priors(self._t, i, mva.ctypes.data, pra.ctypes.data, len(mva), beta))
+        info = self._ext_info.get(key) or {}
+        info.update(source=req.get("source"), n_priors=len(req.get("priors") or {}) or info.get("n_priors", 0))
         if req.get("value") is not None:
-            v = 2.0 * float(req["value"]) - 1.0
+            raw = float(req["value"])
+            val = self.calibrate(raw) if req.get("calibrate", True) else raw
             path = (self._event_info.get(key) or (None, [key]))[1]
             if not path or path[-1] != key:
                 path = [key]
+            if len(path) == 1 and key != int(self.a.key[self.root]) and self._is_root_child(i):
+                path = [int(self.a.key[self.root]), key]       # the parent is known: siblings see the value
             pa = np.array(path, dtype=np.uint64)
-            out["backed_up"] = int(lib.mc_tree_backup_ext(self._t, pa.ctypes.data, len(pa), v, 1))
-        self._ext_info[key] = {"source": req.get("source"), "value": req.get("value"),
-                               "n_priors": len(req.get("priors") or {})}
+            out["backed_up"] = int(lib.mc_tree_backup_ext(self._t, pa.ctypes.data, len(pa), 2.0 * val - 1.0, 1))
+            out["value"] = val
+            # every value backed up through this node (a recalibration corrects each once)
+            vals = info.get("values") or []
+            vals.append({"raw": raw, "value": val, "path": [int(k) for k in path],
+                         "calibrated": bool(req.get("calibrate", True))})
+            info.update(value=val, value_raw=raw, values=vals)
+        self._ext_info[key] = info
         return out
+
+    def _is_root_child(self, i: int) -> bool:
+        a = self.a
+        if a.state[self.root] != ST_EXPANDED:
+            return False
+        e0, ne = int(a.estart[self.root]), int(a.nedges[self.root])
+        return bool((a.e_child[e0:e0 + ne] == i).any())
+
+    # ------------------------------------------------------------ calibration of external values
+    def calibrate(self, v: float) -> float:
+        """The winrate an external value v enters the tree with (the current calibration map)."""
+        return apply_calibration(v, self.cfg.calib_a, self.cfg.calib_b)
+
+    def set_calibration(self, a: float, b: float) -> int:
+        """Use sigmoid(a * logit(v) + b) for external values from now on, and re-calibrate the values
+        already in the tree: each node's own value is replaced and the sums along the path through
+        which it was backed up are corrected by the difference (values that later simulations
+        carried up from an evaluated leaf keep their old calibration).  Returns the values changed."""
+        if not a > 0:
+            raise ValueError("the calibration slope must be positive (a monotone map)")
+        with self._struct:
+            self.cfg.calib_a, self.cfg.calib_b = float(a), float(b)
+            changed = 0
+            for key, info in self._ext_info.items():
+                vals = [e for e in (info.get("values") or []) if e.get("calibrated", True)]
+                if not vals:
+                    continue
+                own = 2.0 * self.calibrate(info["values"][-1]["raw"]) - 1.0 \
+                    if info["values"][-1].get("calibrated", True) else 2.0 * info["values"][-1]["value"] - 1.0
+                for ent in vals:
+                    new = self.calibrate(ent["raw"])
+                    if abs(new - ent["value"]) < 1e-9:
+                        continue
+                    pa = np.array(ent["path"] or [key], dtype=np.uint64)
+                    lib.mc_tree_adjust_ext(self._t, pa.ctypes.data, len(pa), 2.0 * (new - ent["value"]), own)
+                    ent["value"] = new
+                    changed += 1
+                info["value"] = info["values"][-1]["value"]
+            return changed
 
     def _apply_pending(self) -> None:
         for key in list(self._ext_pending):
             if lib.mc_tree_find(self._t, key) >= 0:
                 req = self._ext_pending.pop(key)
                 self._apply_external(key, req)
+
+    # ------------------------------------------------------------ root breadth, hooks, subtree
+    def set_root_breadth(self, moves: dict) -> int:
+        """Minimum visits at the root (v1 root breadth): {move: "candidate" | "explore"} (moves as
+        points, coordinates or None for pass).  A "candidate" (a move the model proposed) is selected
+        first while its visits are below max(root_min_floor, root_min_frac * root visits), an
+        "explore" move (unconventional, scout) below the *_explore pair.  Replaces the previous set;
+        advance() and set_root() clear it.  Returns the number of classed moves."""
+        size = self.root_board.size
+        cls: dict[int, int] = {}
+        for m, c in (moves or {}).items():
+            try:
+                p = to_point(m, size)
+            except IllegalMove:
+                continue
+            k = BREADTH[c] if isinstance(c, str) else int(c)
+            if k:
+                p = -1 if p is None else p
+                cls[p] = min(cls.get(p, k), k)      # both: "candidate" (the larger minimum)
+        mv = np.array(list(cls), dtype=np.int16)
+        cl = np.array([cls[p] for p in cls], dtype=np.uint8)
+        self._root_breadth = dict(cls)
+        return int(lib.mc_tree_set_root_cls(self._t, mv.ctypes.data, cl.ctypes.data, len(mv)))
+
+    @property
+    def root_breadth(self) -> dict:
+        """{move (None = pass): "candidate" | "explore"} at the current root."""
+        return {(None if p < 0 else p): BREADTH_NAME[k] for p, k in self._root_breadth.items()}
+
+    def _clear_root_breadth(self) -> None:
+        self._root_breadth = {}
+        lib.mc_tree_set_root_cls(self._t, None, None, 0)
+
+    def rearm(self, key: Union[int, str]) -> bool:
+        """Let the expansion hook fire again for this node, e.g. after the request it raised was
+        dropped: it fires on the node's next visit if the node is still within hook_depth of the root
+        or has n_thr visits.  False if the node is not in the tree."""
+        with self._struct:
+            i = self.find(key)
+            if i < 0:
+                return False
+            lib.mc_tree_rearm(self._t, i)
+            return True
+
+    def subtree_mask(self) -> np.ndarray:
+        """mark[i] = 1 for the nodes reachable from the current root (exact at the time of the call;
+        safe during a search)."""
+        with self._struct:
+            nn = self.n_nodes
+            mark = np.zeros(max(nn, 1), dtype=np.uint8)
+            lib.mc_tree_reach(self._t, self.root, mark.ctypes.data, nn)
+            self._mark = (self._root_gen, time.monotonic(), mark, nn)
+            return mark[:nn]
+
+    def in_subtree(self, key: Union[int, str], max_age: float = 2.0) -> bool:
+        """Whether the node is reachable from the current root through the tree's edges (any move
+        order).  A reachability mark is computed once per root and reused: a node it contains stays
+        in the subtree until the root moves (edges are never removed in between); a node created
+        after the mark was created by a simulation from this root; a node the mark does not contain
+        is checked again on a fresh mark if the mark is older than max_age seconds."""
+        with self._struct:
+            i = self.find(key)
+            if i < 0:
+                return False
+            m = self._mark
+            if m is None or m[0] != self._root_gen:
+                self.subtree_mask()
+                m = self._mark
+            if i >= m[3]:
+                return True
+            if m[2][i]:
+                return True
+            if time.monotonic() - m[1] <= max_age:
+                return False
+            self.subtree_mask()
+            m = self._mark
+            return True if i >= m[3] else bool(m[2][i])
 
     # ------------------------------------------------------------ reuse
     def advance(self, move: Move) -> int:
@@ -594,6 +829,8 @@ class MCTS:
             self.history.append(self.root_board.stone_hash)
             self.root, self.root_board = child, nb
             self.moves.append(p)
+            self._root_gen += 1
+            self._clear_root_breadth()
             if self.frozen:
                 self.frozen = False
                 self._push_params()
@@ -608,6 +845,8 @@ class MCTS:
             self.root = self._node_for(b)
             self.root_board = b
             self.history = [int(h) for h in history]
+            self._root_gen += 1
+            self._clear_root_breadth()
             self._sync_root()
             return self.root
 
@@ -671,6 +910,7 @@ class MCTS:
         a.vl[:k] = 0
         a.ctr[C_NODES], a.ctr[C_EDGES] = k, total
         self.root = int(new_of[self.root])
+        self._root_gen += 1
         if not lib.mc_tree_rebuild_tt(self._t):
             raise MemoryError("rebuilding the transposition table failed")
         self._sync_root()
@@ -692,6 +932,7 @@ class MCTS:
                     "root_board": self.root_board.to_dict(), "moves": self.moves,
                     "weights": self.weights.to_json() if self.weights else None,
                     "ext_info": {f"{k:016x}": v for k, v in self._ext_info.items()},
+                    "root_breadth": {str(p): k for p, k in self._root_breadth.items()},
                     "searches": self.searches, "frozen": self.frozen, "saved_at": time.time()}
             arrays["meta"] = np.frombuffer(json.dumps(meta).encode(), dtype=np.uint8)
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -738,6 +979,11 @@ class MCTS:
         eng.searches = int(meta.get("searches", 0))
         eng.frozen = bool(meta.get("frozen", False))
         eng._ext_info = {int(k, 16): v for k, v in (meta.get("ext_info") or {}).items()}
+        rb = {int(p): int(k) for p, k in (meta.get("root_breadth") or {}).items()}
+        if rb:
+            eng._root_breadth = rb
+            mv, cl = np.array(list(rb), dtype=np.int16), np.array(list(rb.values()), dtype=np.uint8)
+            lib.mc_tree_set_root_cls(eng._t, mv.ctypes.data, cl.ctypes.data, len(mv))
         eng._push_params()
         eng._sync_root()
         if int(arrays.key[eng.root]) != root_board.key:
@@ -746,9 +992,16 @@ class MCTS:
 
     # ------------------------------------------------------------ misc
     def table(self, top: int = 10) -> str:
-        """The root table as text (move, visits, winrate, prior, PV)."""
-        rows = [f"{'move':>5} {'visits':>8} {'winrate':>8} {'prior':>7}  pv"]
-        for m in self.root_stats(top):
-            q = "-" if m["q"] is None else f"{m['q']:.3f}"
-            rows.append(f"{m['coord']:>5} {m['n']:>8} {q:>8} {m['prior']:>7.4f}  {' '.join(m['pv'])}")
+        """The root table as text (move, visits, winrate, prior, PV; with external values also the
+        move's own model value, '*' when its winrate uses the stand-in, and its root-breadth class)."""
+        stats = self.root_stats(top)
+        ext = any(m["evaluated"] or m["standin"] for m in stats)
+        rows = [f"{'move':>5} {'visits':>8} {'winrate':>8} {'prior':>7}" + (f" {'model':>6}" if ext else "") + "  pv"]
+        for m in stats:
+            q = "-" if m["q"] is None else f"{m['q']:.3f}" + ("*" if m["standin"] else "")
+            mod = ""
+            if ext:
+                mod = " " + (f"{m['v_ext']:6.3f}" if m["v_ext"] is not None else f"{'-':>6}")
+            rows.append(f"{m['coord']:>5} {m['n']:>8} {q:>8} {m['prior']:>7.4f}{mod}  {' '.join(m['pv'])}"
+                        + (f"  [{m['breadth']}]" if m.get("breadth") else ""))
         return "\n".join(rows)

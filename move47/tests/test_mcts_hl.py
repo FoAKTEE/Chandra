@@ -283,7 +283,9 @@ def test_fit_lam_and_beta_recover_the_true_mix():
 
 def test_learner_fits_lam_beta_from_external_evaluations_and_the_engine_applies_them(tmp_path):
     rng = np.random.default_rng(1)
-    L = OnlineLearner(tmp_path / "run", mix_min_pairs=20, **FAST)
+    # the calibration of external values is off here: lam is recovered on the raw values (with it on,
+    # lam is fitted on the calibrated values; tests/test_mcts_calib.py)
+    L = OnlineLearner(tmp_path / "run", mix_min_pairs=20, calib=False, **FAST)
     u0 = L.update()
     assert u0["mix"]["lam"]["status"] == "default" and "lam" not in L.current.params   # no external data yet
     w = load_default()

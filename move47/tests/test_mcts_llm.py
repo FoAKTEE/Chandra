@@ -3,6 +3,7 @@ import json
 import threading
 import time
 
+import numpy as np
 import pytest
 
 from gotree.dag import DAG
@@ -313,7 +314,7 @@ def test_failure_classes_from_session_logs(tmp_path):
 
 def test_refute_of_the_top_move_and_lessons_after_a_decision(tmp_path):
     b, h = board_from_moves(9, MIDGAME_9)
-    svc = service(tmp_path, MockWorker(), refute=True, refute_after_s=0.0)
+    svc = service(tmp_path, MockWorker(), refute=True, refute_after_s=0.0, boost_top=0)   # no boosted expands
     eng = MCTS(b, history=h, config=cfg(hook_depth=0))
     svc.attach(eng)
     svc.start()
@@ -353,4 +354,88 @@ def test_job_cap_and_queue_cap(tmp_path):
     assert svc.wait_idle(20)
     st = svc.stats()
     assert len(worker.jobs) == 3 == st["launched"] and st["queue"] <= 5 and st["cap_dropped"] > 0
+    svc.close()
+
+
+# ------------------------------------------------------------------ races (found by the ledger verifier at e7b539b)
+@pytest.mark.parametrize("rep", range(4))
+def test_wait_idle_means_every_result_is_applied(tmp_path, rep):
+    """Results are applied before a request leaves `_running`, and an inbox event counts as busy
+    until it is triaged, so wait_idle() never reports idle while results are still being applied:
+    with every application slowed down, every node that raised an event (the empty board's root and
+    children) carries its result the moment wait_idle returns, through jobs (all 82 nodes) and
+    through the DAG cache (a second tree on the same DAG; its root has the cached evaluation at once,
+    so fewer children are visited)."""
+    for phase in ("jobs", "cache"):
+        svc = service(tmp_path, FrameWorker())
+        eng = MCTS(Board(9), config=cfg())
+        orig = eng.set_external
+
+        def slow(*a, **k):
+            time.sleep(0.003)
+            return orig(*a, **k)
+        eng.set_external = slow
+        svc.attach(eng)
+        svc.pause()
+        svc.start()
+        eng.search(sims=3000, threads=2)
+        svc.resume()
+        assert svc.wait_idle(60)
+        st = svc.stats()
+        assert st["applied"] == st["events"] == len(svc._seen), (phase, st)
+        assert all(eng.a.flags[eng.find(k)] & FL_EXT for k in svc._seen)
+        if phase == "jobs":
+            assert st["events"] == 82 and st["launched"] == 16
+        else:
+            assert st["events"] >= 30 and st["launched"] == 0 and st["cache_hits"] == st["events"]
+        svc.close()
+
+
+def test_queue_cap_holds_under_concurrent_enqueues(tmp_path):
+    """Insert and cap are one atomic step: 8 threads enqueue 400 distinct requests at once into a
+    queue capped at 5 (nothing dispatches; the engine's visit lookups are slow, which widens any
+    window between ranking and dropping); the queue ends at exactly 5 and every other request is
+    counted as dropped."""
+    from mcts.llm import CLS_DEEP, Request, Target
+
+    class SlowEngine:                                  # what _visits() asks: find() -> not in the tree
+        def find(self, key):
+            time.sleep(0.0005)
+            return -1
+    svc = service(tmp_path, FrameWorker(), queue_cap=5)
+    svc.eng = SlowEngine()
+    rng = np.random.default_rng(0)
+    reqs, seen = [], set()
+    while len(reqs) < 400:
+        b = Board(9)
+        for _ in range(8):
+            b.play(int(rng.choice(b.legal_moves())))
+        dkey, can, s = canonical_of(b)
+        if dkey in seen:
+            continue
+        seen.add(dkey)
+        reqs.append(Request("expand", dkey, can, [Target(b.key, b, [b.key], s, 3)], cls=CLS_DEEP))
+    barrier, done, seen = threading.Barrier(9), [], [0, 0]       # reads, largest queue read
+
+    def work(part):
+        barrier.wait()
+        for r in part:
+            svc._enqueue(r)
+
+    def read():                                        # what a stats() reader can ever observe
+        barrier.wait()
+        while not done:
+            seen[0] += 1
+            seen[1] = max(seen[1], svc.stats()["queue"])
+    ths = [threading.Thread(target=work, args=(reqs[i::8],)) for i in range(8)]
+    reader = threading.Thread(target=read)
+    for t in ths + [reader]:
+        t.start()
+    for t in ths:
+        t.join()
+    done.append(1)
+    reader.join()
+    st = svc.stats()
+    assert seen[0] > 100 and seen[1] <= 5, seen
+    assert len(svc._queue) == st["queue"] == 5 and st["queued"] == 400 and st["cap_dropped"] == 395
     svc.close()

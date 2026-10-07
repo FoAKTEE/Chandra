@@ -25,6 +25,12 @@ What ``update()`` refits (targets come only from our own search and game results
 (c) lam and beta (mix.py) from nodes with an external evaluation of source ``mix_source``,
     compared with the node's later, deeper search; written as params.lam / params.beta of the
     next version once ``mix_min_pairs`` pairs exist (until then the engine's defaults stay).
+(d) the calibration of external values (mix.fit_calib, node move47::mcts-calib): a monotone map
+    sigmoid(a * logit(v) + b) from the model's value v of a node to the node's playout Q after a
+    deeper search (its sample's q_playout with at least ``calib_min_visits`` visits), shrunk toward
+    the identity with ``calib_n0`` pseudo-pairs; written as params.calib_a / params.calib_b once
+    ``calib_min_pairs`` pairs exist; lam is then fitted on the calibrated values (what the engine
+    mixes).  ``fit_calibration()`` refits it on demand (e.g. during a long search).
 
 Everything persists in ``run_dir`` so learning continues across moves, games and processes:
 
@@ -58,7 +64,7 @@ from ..weights import Weights, load_default
 from .data import (PASS, Sample, as_board, censor_rows, heldout, limit_blas_threads, norm_dist, policy_rows,
                    target_vector)
 from .fit import PolicySet, fit_policy
-from .mix import PRIOR, fit_beta, fit_lam
+from .mix import PRIOR, apply_calib, fit_beta, fit_calib, fit_lam
 from .regression import check_guards, load_guards, regression_metrics
 from .value import ValueModel, fit_value, inputs_for, value_metrics
 
@@ -102,6 +108,10 @@ DEFAULTS = dict(
     mix_playouts=32,          # playouts for the playout estimate at an external evaluation
     mix_min_ratio=2.0,        # the deep observation needs this many times the visits at the evaluation
     mix_min_visits=256,
+    calib=True,               # (d) fit the calibration of external values
+    calib_n0=10.0,            # shrinkage toward the identity (pseudo-pairs)
+    calib_min_pairs=5,
+    calib_min_visits=1024,    # the deeper search: the node's sample has at least this many visits
     threads=8,                # value-input playouts in update()
     blas_threads=1,           # cap on numpy's OpenBLAS pool (process-wide), None = leave it
     seed=0,
@@ -167,7 +177,8 @@ class OnlineLearner:
         self._lines_written = 0
         self._state_sig = None
         self.value_model: Optional[ValueModel] = None
-        self.mix: dict = {"lam": {"status": "default", "pairs": 0}, "beta": {"status": "default", "pairs": 0}}
+        self.mix: dict = {"lam": {"status": "default", "pairs": 0}, "beta": {"status": "default", "pairs": 0},
+                          "calib": {"status": "default", "pairs": 0, "a": 1.0, "b": 0.0}}
         self._guards = load_guards(Path(self.cfg["guards_path"])) if self.cfg["guards_path"] else None
         self._reg_path = Path(self.cfg["regression_path"]) if self.cfg["regression_path"] else None
         self._base_policy: Optional[Policy] = None
@@ -563,6 +574,13 @@ class OnlineLearner:
                 if abs(float(params.get(k, PRIOR)) - v) > 1e-3:
                     mix_changed = True
                 params[k] = v
+        cal = mix.get("calib") or {}
+        if cfg["calib"] and cal.get("status") == "fitted" and cal["pairs"] >= cfg["calib_min_pairs"]:
+            for k, d in (("a", 1.0), ("b", 0.0)):
+                v = round(float(cal[k]), 4)
+                if abs(float(params.get(f"calib_{k}", d)) - v) > 1e-3:
+                    mix_changed = True
+                params[f"calib_{k}"] = v
         if policy_ok and cfg["playout_temp"] == "match":
             params["playout_temperature"] = round(self._match_playout_temperature(tr, w_new), 3)
             out["playout_temperature"] = params["playout_temperature"]
@@ -690,10 +708,47 @@ class OnlineLearner:
                 pris.append({"pl": pl / pl.sum(), "pe": pe / pe.sum(), "pi": pi, "w": w})
         return vals, pris
 
+    def calib_pairs(self) -> list[dict]:
+        """(model value, deeper playout Q) pairs: each external evaluation of source mix_source with
+        a value, and the latest sample of that node observed after it with at least
+        calib_min_visits visits (its q_playout is the target)."""
+        cfg = self.cfg
+        with self._lock:
+            ext = [e for e in self.external if e.get("source") == cfg["mix_source"] and e.get("value") is not None]
+            smp = dict(self.samples)
+        out = []
+        for e in ext:
+            s = smp.get(int(e["key"], 16))
+            if s is None or s.t < e["t"] or s.qp is None or (s.n and s.n < cfg["calib_min_visits"]):
+                continue
+            out.append({"v": float(e["value"]), "t": float(s.qp), "w": self._weight(s), "key": e["key"],
+                        "n": s.n, "depth": s.depth})
+        return out
+
+    def fit_calibration(self) -> dict:
+        """(d) on the current samples: {"a", "b", "pairs", "status", ...}; also kept in self.mix."""
+        cfg = self.cfg
+        pairs = self.calib_pairs()
+        if not cfg["calib"]:
+            cal = {"status": "off", "pairs": len(pairs), "a": 1.0, "b": 0.0}
+        elif len(pairs) >= cfg["calib_min_pairs"]:
+            cal = fit_calib([p["v"] for p in pairs], [p["t"] for p in pairs], [p["w"] for p in pairs],
+                            n0=cfg["calib_n0"])
+        else:
+            cal = {"status": "default", "pairs": len(pairs), "a": 1.0, "b": 0.0,
+                   "note": f"needs {cfg['calib_min_pairs']} '{cfg['mix_source']}' values matched with a deeper search"}
+        with self._lock:
+            self.mix = {**self.mix, "calib": cal}
+        return cal
+
     def _fit_mix(self) -> dict:
         cfg = self.cfg
+        cal = self.fit_calibration()
         vals, pris = self.mix_pairs()
         lo, hi, n0 = 0.1, 0.9, cfg["mix_n0"]
+        if cal.get("status") == "fitted" and cal["pairs"] >= cfg["calib_min_pairs"]:
+            for p in vals:                     # lam weighs what the engine mixes: the calibrated value
+                p["v"] = float(apply_calib(p["v"], cal["a"], cal["b"]))
         if len(vals) >= cfg["mix_min_pairs"]:
             lam = fit_lam([p["v"] for p in vals], [p["z"] for p in vals], [p["t"] for p in vals],
                           [p["w"] for p in vals], n0=n0, lo=lo, hi=hi)
@@ -706,7 +761,9 @@ class OnlineLearner:
         else:
             beta = {"status": "default", "pairs": len(pris), "beta": PRIOR,
                     "note": f"needs {cfg['mix_min_pairs']} matched '{cfg['mix_source']}' prior pairs"}
-        self.mix = {"lam": lam, "beta": beta, "external": len(self.external)}
+        if cal.get("status") == "fitted" and isinstance(lam, dict):
+            lam["on"] = "calibrated values"
+        self.mix = {"lam": lam, "beta": beta, "calib": cal, "external": len(self.external)}
         return self.mix
 
     # ------------------------------------------------------------------ reporting
@@ -751,4 +808,6 @@ def _brief_update(u: dict) -> dict:
     d["value"] = {k: v[k] for k in ("status", "version", "n", "labelled", "heldout_q", "heldout_game") if k in v}
     m = u.get("mix") or {}
     d["mix"] = {k: {kk: m[k].get(kk) for kk in ("status", "pairs", k, "raw")} for k in ("lam", "beta") if k in m}
+    if "calib" in m:
+        d["mix"]["calib"] = {kk: m["calib"].get(kk) for kk in ("status", "pairs", "a", "b", "raw_a", "raw_b")}
     return d

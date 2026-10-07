@@ -136,6 +136,10 @@ _SIGS = {
     "mc_tree_pop_event": (_I, [_P, _P, _P, _P, _P]),
     "mc_tree_clear_events": (_I, [_P]),
     "mc_tree_mark": (_I64, [_P, ctypes.c_int32, _P]),
+    "mc_tree_reach": (_I64, [_P, ctypes.c_int32, _P, _I64]),
+    "mc_tree_adjust_ext": (_I, [_P, _P, _I, _D, _D]),
+    "mc_tree_rearm": (_I, [_P, ctypes.c_int32]),
+    "mc_tree_set_root_cls": (_I, [_P, _P, _P, _I]),
     "mc_ev_path_max": (_I, []),
 }
 

@@ -8,7 +8,9 @@
 One tree per game: after our move and the opponent's reply the engine advances twice (never
 reset), so the new root keeps its subtree and statistics; a move list that does not continue the
 tree's (resync, another process played) jumps with set_root() and still keeps the tree.  The
-decision is the most-visited root move.  The LLM service (mcts/llm.py) evaluates nodes
+decision is made by mcts/decide.py: the most-visited root move if it has a model value, else the
+most-visited top candidate that has one (after waiting a bounded time for the leader's value); the
+rule that decided is recorded with every move.  The LLM service (mcts/llm.py) evaluates nodes
 asynchronously; after each decision an `abstract` job distils lessons (v1 style, with the moves
 whose LLM prior disagreed with the final visits as surprises).  Board fetching and move submission
 reuse gotree.play (engine outages, resyncs, transport errors).  Per-move JSONL record; the tree is
@@ -23,6 +25,7 @@ import os
 import shlex
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -30,6 +33,7 @@ from gotree.play import BACKOFF, MAX_WAIT, _call, current_board, play_decision
 from gotree.position import IllegalMove
 
 from .arena import board_from_arena
+from .decide import DecideConfig, decide
 from .tree import MCTS, MCTSConfig
 
 GAUGES = ("queue", "running", "inbox", "w_cur", "paused_s")
@@ -40,9 +44,10 @@ class Player:
 
     def __init__(self, run_dir: Path, config: MCTSConfig, time_s: Optional[float], threads: int,
                  sims: Optional[int] = None, weights=None, learner=None, service=None, save_every: int = 5,
-                 log: Callable[[str], None] = print):
+                 log: Callable[[str], None] = print, decide_cfg: Optional[DecideConfig] = None):
         self.run_dir = Path(run_dir)
         self.cfg, self.time_s, self.threads, self.sims = config, time_s, threads, sims
+        self.decide_cfg = decide_cfg or DecideConfig()
         self.weights, self.learner, self.service = weights, learner, service
         self.save_every, self.log = save_every, log
         self.eng: Optional[MCTS] = None
@@ -122,15 +127,30 @@ class Player:
             def stop() -> bool:
                 svc.tick()
                 return False
-            svc.searching = True
-        try:
-            r = eng.search(time_s=self.time_s, sims=self.sims, threads=self.threads, stop=stop)
-        finally:
-            if svc is not None:
-                svc.searching = False
+        r = eng.search(time_s=self.time_s, sims=self.sims, threads=self.threads, stop=stop)
+        more: list = []
+
+        def extend(t: float) -> dict:
+            x = eng.search(time_s=t, threads=self.threads, stop=stop)
+            more.append(x)
+            return x
+        dc = self.decide_cfg
+        # extension chunks scale with the move's budget (a tenth of it, at most chunk_s)
+        dc = replace(dc, chunk_s=min(dc.chunk_s, max(0.25, 0.1 * self.time_s) if self.time_s else 0.5))
+        d = decide(eng, dc, svc, extend, self.log)
+        if more:                                  # the summary after the extension
+            last = more[-1]
+            for k in ("moves", "root_n", "q", "nodes", "edges", "depth_max", "weights"):
+                r[k] = last[k]
+            r["extension_sims"] = sum(x["sims"] for x in more)
+            r["sims"] += r["extension_sims"]
+            r["time_s"] += sum(x["time_s"] for x in more)
         self.decisions += 1
         r["root_n_start"] = n0
-        r["decision"] = {"real": r["best"] or "pass"}
+        r["best"], r["best_move"] = d["coord"], d["move"]
+        r["decision"] = {"real": d["coord"] or "pass", "rule": d["rule"], "lead": d["lead"],
+                         "extension": d["extension"], "extended_s": d["extended_s"]}
+        r["decide"] = d
         r["candidates"] = [{"real": m["coord"], "n": m["n"]} for m in r["moves"]]
         return r
 
@@ -168,10 +188,16 @@ class Player:
         self.close()
 
 
+def _r4(x):
+    return None if x is None else round(x, 4)
+
+
 def root_table(summ: dict, llm_priors: Optional[dict], top: int = 10) -> list[dict]:
     out = []
     for m in summ["moves"][:top]:
-        row = {"move": m["coord"], "n": m["n"], "q": None if m["q"] is None else round(m["q"], 4),
+        row = {"move": m["coord"], "n": m["n"], "q": _r4(m["q"]), "q_playout": _r4(m.get("q_playout")),
+               "v_ext": _r4(m.get("v_ext")), "evaluated": bool(m.get("evaluated")),
+               "standin": bool(m.get("standin")), "breadth": m.get("breadth"),
                "prior": round(m["prior"], 4), "prior_learned": round(m["prior_learned"], 4), "pv": m["pv"][:6]}
         if llm_priors is not None:
             p = llm_priors.get(m["move"])
@@ -238,13 +264,14 @@ def play_games(client, opponent: str, games: int, player: Player, color: Optiona
                 svc.request_abstract(summ["moves"], summ["best_move"], summ["q"], summ["root_n"],
                                      label=f"g{game_no}p{ply}")
             rec = {"game": game_no, "ply": ply, "color": "B" if summ["to_play"] == "X" else "W", "move": mv,
-                   "sync": how, "time_s": round(summ["time_s"], 2), "sims": summ["sims"],
+                   "decision": summ["decision"], "sync": how, "time_s": round(summ["time_s"], 2), "sims": summ["sims"],
                    "sims_per_s": round(summ["sims_per_s"]), "nodes": summ["nodes"], "root_n": summ["root_n"],
                    "root_n_start": summ["root_n_start"], "q": summ["q"], "depth_mean": round(summ["depth_mean"], 1),
                    "stop_reason": summ["stop_reason"], "gc_rounds": summ["gc_rounds"], "weights": summ["weights"],
                    "root_table": root_table(summ, lp), "llm_root": llm_root, "llm": player.llm_delta()}
             ll = rec["llm"]
-            log(f"  move {ply}: {mv} ({how}) {summ['sims']} sims in {summ['time_s']:.0f}s, root_n {summ['root_n']} "
+            log(f"  move {ply}: {mv} [{summ['decision']['rule']}] ({how}) {summ['sims']} sims in {summ['time_s']:.0f}s, "
+                f"root_n {summ['root_n']} "
                 f"(start {summ['root_n_start']}), q {summ['q']:.3f}, {summ['nodes']} nodes"
                 + (f"; llm jobs {ll['launched']:.0f} ok {ll['ok']:.0f} failed {ll['failed']:.0f} cached "
                    f"{ll['cache_hits']:.0f} applied {ll['applied']:.0f}, ${ll['cost_usd']:.2f} "
@@ -348,15 +375,22 @@ def build_service(a, run: Path, log, learner=None):
 def _engine_config(a) -> MCTSConfig:
     from .cli import _config
     cfg = _config(a)
-    if a.n_thr and not any(kv.startswith("n_thr=") for kv in (a.set or [])):
+    given = {kv.partition("=")[0] for kv in (a.set or [])}
+    if a.n_thr and "n_thr" not in given:
         cfg.n_thr = a.n_thr
+    if "root_noise" not in given:
+        cfg.root_noise = a.root_noise
     return cfg
+
+
+def _decide_config(a) -> DecideConfig:
+    return DecideConfig(rule=a.decide, top=a.decide_top, min_share=a.decide_min_share, extend_s=a.decide_extend)
 
 
 def _write_config(run: Path, a, cfg: MCTSConfig, svc, threads: int) -> None:
     from dataclasses import asdict
     (run / "config.json").write_text(json.dumps({
-        "argv": sys.argv, "engine": asdict(cfg), "threads": threads,
+        "argv": sys.argv, "engine": asdict(cfg), "threads": threads, "decide": asdict(_decide_config(a)),
         "llm": None if svc is None else asdict(svc.cfg), "worker": None if svc is None else svc.worker.name,
         "started": time.strftime("%Y-%m-%d %H:%M:%S")}, indent=1, default=str))
 
@@ -382,7 +416,11 @@ def cmd_play(a) -> int:
     log(f"mcts play: {a.games} game(s) vs {a.opponent}, {a.time_per_move}s/move, {threads} threads, "
         f"llm {'off' if svc is None else f'{svc.worker.name} W={svc.cfg.workers}'}"
         f"{', learning' if learner else ''}; run {run}")
-    player = Player(run, cfg, a.time_per_move, threads, a.sims, weights, learner, svc, a.save_every, log)
+    dcfg = _decide_config(a)
+    if svc is None:
+        dcfg.rule = "visits"                     # code-only: no model values to wait for
+    player = Player(run, cfg, a.time_per_move, threads, a.sims, weights, learner, svc, a.save_every, log,
+                    decide_cfg=dcfg)
     try:
         res = play_games(ArenaClient(a.arena, token), a.opponent, a.games, player, a.color,
                          record=run / "moves.jsonl", abstract=not a.no_abstract, log=log)
@@ -394,75 +432,162 @@ def cmd_play(a) -> int:
     return 0
 
 
+def make_calib_learner(run: Path, weights, log):
+    """An observe-only OnlineLearner for llm-search: it collects the engine's samples and the model's
+    values and refits the calibration (fit_calibration) between search chunks; no policy refits."""
+    from .hl import OnlineLearner
+    return OnlineLearner(run / "hl", base=weights, value=False)
+
+
+def _snap_rows(eng, lp: dict, top: int) -> list[dict]:
+    return [{"move": m["coord"], "n": m["n"], "q": _r4(m["q"]), "q_playout": _r4(m["q_playout"]),
+             "v_ext": _r4(m["v_ext"]), "evaluated": m["evaluated"], "standin": m["standin"],
+             "breadth": m["breadth"], "prior": round(m["prior"], 4), "prior_learned": round(m["prior_learned"], 4),
+             "llm_prior": None if lp.get(m["move"]) is None else round(lp[m["move"]], 4)}
+            for m in eng.root_stats(top, pv_len=1)]
+
+
+def _fmt_row(m: dict) -> str:
+    q = "-" if m["q"] is None else f"{m['q']:.3f}" + ("*" if m["standin"] else "")
+    v = f" v={m['v_ext']:.3f}" if m["v_ext"] is not None else ""
+    lp = "" if m.get("llm_prior") is None else f" llm={m['llm_prior']:.2f}"
+    return f"{m['move']} n={m['n']} q={q}{v}{lp}"
+
+
 def cmd_llm_search(a) -> int:
-    """One position: code-only warm-up, then search with the LLM service; root tables over time."""
+    """One position: code-only warm-up, then search with the LLM service (--llm off: the code-only
+    control with the same engine settings and chunks); root tables over time; online calibration of
+    the model's values between chunks; the decision and the rule that made it."""
+    from dataclasses import asdict
     from .board import board_from_sgf
     from .cli import _run_dir
     run = _run_dir(a.run)
     log = _logger(run)
     cfg = _engine_config(a)
+    given = {kv.partition("=")[0] for kv in (a.set or [])}
+    if "observe_max_samples" not in given:
+        cfg.observe_max_samples = 1024
     threads = check_threads(a.threads, a.max_load_frac, log)
     b, hist, moves = board_from_sgf(Path(a.sgf).read_text(), a.upto)
-    svc = build_service(a, run, log)
+    llm_on = a.llm == "on"
+    learner = make_calib_learner(run, a.weights, log) if (llm_on and a.calib == "online") else None
+    svc = build_service(a, run, log, learner) if llm_on else None
     _write_config(run, a, cfg, svc, threads)
-    eng = MCTS(b, history=hist, config=cfg, weights=a.weights)
-    svc.attach(eng)
+    dcfg = _decide_config(a)
+    if not llm_on:
+        dcfg.rule = "visits"
+    eng = MCTS(b, history=hist, config=cfg, weights=a.weights, learner=learner)
+    if svc is not None:
+        svc.attach(eng)
     log(f"llm-search: {Path(a.sgf).name} after {len(moves)} moves, {b.to_play} to play; warm-up {a.warmup}s code "
-        f"only, then {a.time}s with {svc.worker.name}, W={svc.cfg.workers}, at most {svc.cfg.max_jobs or 'any'} "
-        f"sessions, n_thr {cfg.n_thr}, {threads} threads")
+        f"only, then {a.time}s " + (f"with {svc.worker.name}, W={svc.cfg.workers}, at most "
+                                    f"{svc.cfg.max_jobs or 'any'} sessions" if svc else "code only (control)")
+        + f", n_thr {cfg.n_thr}, {threads} threads, root noise {cfg.root_noise}, stand-in {cfg.standin}, "
+        f"decision {dcfg.rule} (extend <= {dcfg.extend_s:.0f}s), calibration {a.calib if svc else 'n/a'}")
     t_start = time.time()
-    out: dict = {"sgf": str(a.sgf), "upto": len(moves), "to_play": b.to_play, "threads": threads,
-                 "worker": svc.worker.name, "llm": svc.cfg.__dict__, "n_thr": cfg.n_thr, "snapshots": []}
+    out: dict = {"sgf": str(a.sgf), "upto": len(moves), "to_play": b.to_play, "threads": threads, "llm": llm_on,
+                 "worker": svc.worker.name if svc else None, "llm_cfg": asdict(svc.cfg) if svc else None,
+                 "engine": asdict(cfg), "decide": asdict(dcfg), "n_thr": cfg.n_thr, "snapshots": [],
+                 "calibration": []}
     r0 = eng.search(time_s=a.warmup, threads=threads) if a.warmup > 0 else None
     out["before"] = {"sims": r0["sims"] if r0 else 0, "root_n": int(eng.a.n[eng.root]), "q": r0["q"] if r0 else None,
                      "table": eng.root_stats(a.top)}
     log("root table before LLM input (code-only warm-up):\n" + eng.table(a.top))
-    svc.start()
+    if svc is not None:
+        svc.start()
     t0 = time.time()
     last = [t0]
 
     def snapshot(tag: str) -> None:
-        st = svc.stats()
-        lp = svc.root_llm_priors()
-        rows = eng.root_stats(6)
+        st = svc.stats() if svc else {}
+        lp = svc.root_llm_priors() if svc else {}
         snap = {"t": round(time.time() - t0, 1), "tag": tag, "root_n": int(eng.a.n[eng.root]),
-                "llm": st, "llm_root_moves": len(lp),
-                "top": [{"move": m["coord"], "n": m["n"], "q": m["q"], "prior": round(m["prior"], 4),
-                         "prior_learned": round(m["prior_learned"], 4),
-                         "llm_prior": None if lp.get(m["move"]) is None else round(lp[m["move"]], 4)} for m in rows]}
+                "q": _r4(None if eng.node_q(eng.root) is None else (1 + eng.node_q(eng.root)) / 2),
+                "llm": st, "llm_root_moves": len(lp), "calib": [round(eng.cfg.calib_a, 4), round(eng.cfg.calib_b, 4)],
+                "evaluated_root_moves": sum(1 for c in eng.children(eng.root) if c["evaluated"]),
+                "top": _snap_rows(eng, lp, 8)}
         out["snapshots"].append(snap)
-        log(f"[{snap['t']:.0f}s] root_n {snap['root_n']}; llm events {st['events']:.0f} queued {st['queue']} running "
-            f"{st['running']} launched {st['launched']:.0f} ok {st['ok']:.0f} failed {st['failed']:.0f} cached "
-            f"{st['cache_hits']:.0f} applied {st['applied']:.0f} (mid-search {st['applied_mid_search']:.0f}) "
-            f"${st['cost_usd']:.2f}; top: " + ", ".join(
-                f"{m['move']} n={m['n']} q={'-' if m['q'] is None else round(m['q'], 3)} p={m['prior']:.3f}"
-                f"/{m['prior_learned']:.3f}" + ("" if m["llm_prior"] is None else f" llm={m['llm_prior']:.2f}")
-                for m in snap["top"]))
+        head = (f"[{snap['t']:.0f}s] root_n {snap['root_n']}; ") + (
+            f"llm events {st['events']:.0f} queued {st['queue']} running {st['running']} launched {st['launched']:.0f} "
+            f"ok {st['ok']:.0f} failed {st['failed']:.0f} cached {st['cache_hits']:.0f} applied {st['applied']:.0f} "
+            f"boosted {st['boosted']:.0f} rearmed {st['rearmed']:.0f} ${st['cost_usd']:.2f}; evaluated root moves "
+            f"{snap['evaluated_root_moves']}; " if svc else "") 
+        log(head + "top: " + ", ".join(_fmt_row(m) for m in snap["top"]))
 
     def stop() -> bool:
-        svc.tick()
+        if svc is not None:
+            svc.tick()
         if time.time() - last[0] >= a.snapshot_every:
             last[0] = time.time()
             snapshot("search")
         return False
 
-    svc.searching = True
-    r = eng.search(time_s=a.time, threads=threads, stop=stop)
-    t_end = time.time()
-    while svc.stats()["running"] and time.time() - t_end < a.drain:   # sessions still in flight: keep searching
-        r = eng.search(time_s=min(30.0, a.drain), threads=threads, stop=stop)
-    svc.searching = False
-    snapshot("final")
-    svc.close(wait_s=0)
-    out["after"] = {"sims": r["sims"], "root_n": int(eng.a.n[eng.root]), "q": r["q"], "best": r["best"],
-                    "table": eng.root_stats(a.top), "llm_priors_root": {
-                        (m if m is None else eng.root_board.coord(m)): p for m, p in svc.root_llm_priors().items()}}
-    out["llm_totals"] = svc.stats()
+    def chunk(t: float) -> dict:
+        return eng.search(time_s=t, threads=threads, stop=stop)
+
+    sims, r, left = 0, None, a.time
+    every = a.calib_every if (learner is not None and a.calib_every > 0) else a.time
+    while left > 0.5:
+        r = chunk(min(every, left))
+        sims += r["sims"]
+        left -= r["time_s"]
+        if learner is not None:
+            cal = learner.fit_calibration()
+            ent = {"t": round(time.time() - t0, 1), **{k: cal.get(k) for k in ("status", "pairs", "a", "b",
+                                                                               "raw_a", "raw_b", "mse_identity",
+                                                                               "mse_fit")}}
+            if cal.get("status") == "fitted" and cal["pairs"] >= learner.cfg["calib_min_pairs"]:
+                ent["changed_values"] = eng.set_calibration(cal["a"], cal["b"])
+            out["calibration"].append(ent)
+            log(f"calibration after {ent['t']:.0f}s: {ent['status']} on {ent['pairs']} pairs"
+                + (f", a={ent['a']:.3f} b={ent['b']:.3f} (raw {ent['raw_a']:.3f} {ent['raw_b']:.3f}), mse "
+                   f"{ent['mse_identity']:.4f} -> {ent['mse_fit']:.4f}; {ent.get('changed_values', 0)} values "
+                   f"re-calibrated" if ent["status"] == "fitted" else ""))
+    t_main = time.time() - t0
+    snapshot("main")
+    ext_sims: list = []
+
+    def extend(t: float) -> dict:
+        x = chunk(t)
+        ext_sims.append(x["sims"])
+        return x
+    d = decide(eng, dcfg, svc, extend, log)
+    snapshot("decision")
+    log(f"decision: {d['coord']} by rule {d['rule']} (most visits: {d['lead']}; extension {d['extension']}, "
+        f"{d['extended_s']}s); evaluated root moves: {', '.join(d['evaluated_moves']) or 'none'}")
+    out["decision"] = d
+    out["main_s"] = round(t_main, 1)
+    if svc is not None:
+        svc.pause()                                  # no new sessions after the decision
+        t_end = time.time()
+        while svc.stats()["running"] and time.time() - t_end < a.drain:
+            time.sleep(1.0)
+        svc.close(wait_s=0)
+    rr = eng.root_stats(a.top)
+    q = eng.node_q(eng.root)
+    out["after"] = {"sims": sims + sum(ext_sims), "extension_sims": sum(ext_sims), "root_n": int(eng.a.n[eng.root]),
+                    "q": None if q is None else (1 + q) / 2, "best": d["coord"], "rule": d["rule"], "table": rr}
+    if svc is not None:
+        size = eng.root_board.size
+        out["after"]["llm_priors_root"] = {(m if m is None else eng.root_board.coord(m)): p
+                                           for m, p in svc.root_llm_priors().items()}
+        out["evaluated_root_moves"] = [
+            {"move": m["coord"], "n": m["n"], "v_ext": m["v_ext"], "q": m["q"], "q_playout": m["q_playout"],
+             "raw": (eng._ext_info.get(eng.root_board.played(m["move"]).key) or {}).get("value_raw")}
+            for m in eng.root_stats() if m["evaluated"]]
+        out["llm_totals"] = svc.stats()
+        jobs_f = run / "llm-jobs.jsonl"
+        out["jobs"] = [json.loads(x) for x in jobs_f.read_text().splitlines()] if jobs_f.exists() else []
+        log(f"llm totals: {json.dumps(out['llm_totals'])}")
+    if learner is not None:
+        mix = learner._fit_mix()
+        out["mix"] = {k: {kk: v for kk, v in mix[k].items() if not isinstance(v, (list, dict))}
+                      for k in ("lam", "beta", "calib") if k in mix}
+        out["calib_pairs"] = learner.calib_pairs()
+        learner.close()
+        log("learned: " + json.dumps(out["mix"], default=str))
     out["seconds"] = round(time.time() - t_start, 1)
-    jobs_f = run / "llm-jobs.jsonl"
-    out["jobs"] = [json.loads(x) for x in jobs_f.read_text().splitlines()] if jobs_f.exists() else []
-    log("root table after LLM input:\n" + eng.table(a.top))
-    log(f"llm totals: {json.dumps(out['llm_totals'])}; {out['seconds']}s")
+    log("root table at the decision:\n" + eng.table(a.top) + f"\n{out['seconds']}s in all")
     (run / "llm-search.json").write_text(json.dumps(out, indent=1, default=str))
     eng.close()
     return 0
@@ -491,6 +616,16 @@ def _common(p: argparse.ArgumentParser) -> None:
     p.add_argument("--set", action="append", metavar="KEY=VALUE", help="MCTSConfig field")
     p.add_argument("--drain", type=float, default=0.0,
                    help="at the end, wait up to this many seconds for LLM sessions in flight")
+    p.add_argument("--root-noise", type=float, default=0.25,
+                   help="uniform noise mixed into the root priors (v1 root_noise); --set root_noise wins")
+    p.add_argument("--decide", default="evaluated", choices=["evaluated", "visits"],
+                   help="evaluated: play a move with its own model value when a top candidate has one "
+                        "(mcts/decide.py); visits: most visits")
+    p.add_argument("--decide-top", type=int, default=4, help="top candidates for the decision rule")
+    p.add_argument("--decide-min-share", type=float, default=0.2,
+                   help="a top candidate has at least this share of the leader's visits")
+    p.add_argument("--decide-extend", type=float, default=120.0,
+                   help="extra search at most while the most-visited move waits for its model value")
 
 
 def add_parsers(sub) -> None:
@@ -516,6 +651,10 @@ def add_parsers(sub) -> None:
     p.add_argument("--warmup", type=float, default=20.0, help="seconds of code-only search first")
     p.add_argument("--snapshot-every", type=float, default=30.0)
     p.add_argument("--top", type=int, default=10)
+    p.add_argument("--llm", default="on", choices=["on", "off"], help="off: the code-only control")
+    p.add_argument("--calib", default="online", choices=["online", "off"],
+                   help="online: refit the calibration of model values between search chunks (mcts.hl)")
+    p.add_argument("--calib-every", type=float, default=60.0, help="seconds of search between calibration refits")
     _common(p)
     p.set_defaults(fn=cmd_llm_search)
 

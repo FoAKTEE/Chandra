@@ -297,15 +297,16 @@ sessions in flight at exit).
 |---|---|
 | hook | `on_expand` only appends the event to an inbox (O(1)); it fires when a node reaches `n_thr` visits and for every node within `hook_depth` (1) of the root. |
 | triage | One dispatcher thread. Each node's canonical position gives its DAG key and the symmetry `s` (canonical = real.transformed(s)). One request per (kind, DAG key): engine nodes with the same canonical position (symmetric moves, transpositions) follow the first request and all receive its result. A node whose DAG key already has an LLM evaluation is served from the DAG at once, without a session (also across moves, games and runs that share the DAG). |
-| queue | Priority classes: the root's expand; root breadth (scouts, refute) and lessons; the root's children; deeper nodes. Within a class, by the node's current visits (read when a slot frees). Non-root requests wait `dispatch_delay_s` (2 s) after a new root so that the code search ranks the children first. Cap `queue_cap` (256): the lowest priority is dropped. After `advance`, requests whose recorded path does not pass through the new root are dropped. |
+| queue | Priority classes: the root's expand; the most-visited root moves without a model value (`boost`, mcts-calib); root breadth (scouts, refute) and lessons; the root's children (a child with under 0.2% of the root's visits ranks with the deeper nodes); deeper nodes. Within a class, by the node's current visits (read when a slot frees). Non-root requests wait `dispatch_delay_s` (2 s) after a new root so that the code search ranks the children first. Cap `queue_cap` (256): the lowest priority is dropped (insert and drop in one locked step). After `advance`, requests for nodes no longer reachable from the new root are dropped (exact: `MCTS.in_subtree`, any move order). Dropped requests re-arm their node's hook once the queue has room (mcts-calib). |
 | jobs | Built like v1 `_make_job`: position card of the canonical position, memory briefing, `known` for more/refute. Root expand k=10 candidates + u=4 unconventional, other nodes 6 + 1. Root breadth at every new root: v1 `regions()` scouts (v1 defines none below 13x13, so none on 9x9), a refute of the most-visited root move after `refute_after_s` (60 s), and an `abstract` job after each decision. |
-| results | Written to the DAG exactly as v1 writes them (edges with prior and source; unconventional at prior 0.03; scouts mass-scaled; refute at least 0.15; `set_static` value). The engine receives the union of all LLM edges of the DAG key, mapped back with `inv[s]` to the real frame, plus the job's value: `set_external(key, priors, value, source="llm", position=board)`. At the root, unconventional and scout moves get at least `root_explore_prior` (0.05), in place of v1's minimum root visits. A supplied learner gets `observe_external(position, source, priors, value)` for every applied evaluation. |
+| results | Written to the DAG exactly as v1 writes them (edges with prior and source; unconventional at prior 0.03; scouts mass-scaled; refute at least 0.15; `set_static` value). The engine receives the union of all LLM edges of the DAG key, mapped back with `inv[s]` to the real frame, plus the job's value: `set_external(key, priors, value, source="llm", position=board)`. At the root the LLM moves get the engine's minimum visits (`set_root_breadth`, mcts-calib; the 0.05 prior floor `root_explore_prior` that stood in for it is off by default). A supplied learner gets `observe_external(position, source, priors, value)` for every applied evaluation (plus `n=` visits when it takes keyword arguments). A request leaves the running set only after its results are applied, and an inbox event counts as busy until triaged, so `wait_idle()` means applied. |
 | failures | Classified from the JobResult and the job's `session.jsonl` / `session.err` (error results, API-retry events, "API Error" texts only, never the model's own text): rate limit (429, usage limit, with its reset time), overload (529/503), timeout, invalid answer, no answer, exception. Rate limits and overload, and 3 other failures in a row, pause dispatching for 30 s doubling to 30 min (or until a usage-limit reset, at most 6 h) and halve the sessions in flight (floor 1); every 2 successes add one back. A request gets at most 2 sessions after ordinary failures and 6 after rate limits. The search never waits and nothing raises into it. |
 | accounting | `<run>/llm-jobs.jsonl`: one line per session (kind, DAG key, failure class, seconds, tokens and cost from `_cli_usage`, priors applied). Each move record carries the service's counters since the previous move. |
 
 **Play loop.** One tree per game: after our move and the reply the engine advances twice and
 `new_root()` re-ranks the queue; a move list that does not continue the tree's jumps with
-`set_root` (still keeping the tree). Decision: most visits. Board fetches and submissions use
+`set_root` (still keeping the tree). Decision: `mcts/decide.py` (mcts-calib; most visits with
+`--llm off`), the rule recorded per move. Board fetches and submissions use
 gotree's resilient helpers (engine outages, resync, transport errors). `<run>/moves.jsonl` per
 decision: game, ply, move, sync (`new` / `advanced` / `set_root` / `resumed+...`), sims, sims/s,
 nodes, root visits at the start of the search (`root_n_start`: what the reused subtree brought),
@@ -341,14 +342,13 @@ scripts `smoke-a.sh`, `smoke-b.sh` there):
   before / after: H7 1.25M visits, q 0.368 (2.2M simulations) / J3 8.8M visits, q 0.341, H7 7.3M, 0.245, D1 4.8M,
   0.331, root q 0.247 (27.9M simulations).
 
-Known limits: v1's minimum root visits and root prior noise need a change in the engine's root selection
-(`mcts/tree.py`); here a prior floor for unconventional and scout moves stands in. In smoke (b) the most-visited
-move at the end (J3) had no LLM evaluation of its own: the LLM's values were far below the playouts' (White
-0.68-0.95 after every evaluated Black move), so each evaluation lowered that move's Q with `lam` = 0.5, and the
-session cap left 216 requests queued (E7's own child among them). A decision rule or a calibrated `lam` (M7)
-must handle unevaluated root moves. Requests dropped by the queue cap or as stale are not asked again in the same
-tree (the engine fires a node's hook once). Staleness after `advance` is judged from the event's recorded path, so
-a node reachable from the new root only by another move order is dropped too.
+Known limits at this node (all addressed by `move47::mcts-calib`, next section): v1's minimum root visits and
+root prior noise needed a change in the engine's root selection; a prior floor for unconventional and scout moves
+stood in. In smoke (b) the most-visited move at the end (J3) had no LLM evaluation of its own: the LLM's values
+were far below the playouts' (White 0.68-0.95 after every evaluated Black move), so each evaluation lowered that
+move's Q with `lam` = 0.5, and the session cap left 216 requests queued (E7's own child among them). Requests
+dropped by the queue cap or as stale were not asked again in the same tree, and staleness after `advance` was
+judged from the event's recorded path only.
 
 Tests (no model): `python3 -m pytest -q tests/test_mcts_llm.py tests/test_mcts_llm_play.py -p no:cacheprovider`
 (about 20 s): frame mapping for a position with canonical symmetry 2, events from a search turning into jobs
@@ -490,3 +490,78 @@ Not done here:
 - [HOLE] The online learner is not shown to make play stronger. Its versions predict their own search better, but at 8 games of 1 s/move they are level with default-v1. One step of expert iteration from default-v1's own self-play did better (0.65, borderline).
 - [FUTURE] A value-model slot in the C leaf evaluation. Refits during a long search (MISSION.md section 5 says "periodically during search"; here only after decisions). A/Bs at the mission's time control and against the KataGo ladder (M9).
 - The regression positions come from default-v1's own searches, so they favour default-v1. They proved a useful brake on drift, not a strength measure.
+
+## MCTS v2 model values: root breadth, stand-ins, calibration, decision (node `move47::mcts-calib`)
+
+MISSION.md section 5, node `move47::mcts-calib` (M8b). The mcts-llm smoke chose a root move without
+a model value, because every model value pulled its move's Q down. This node makes model values
+enter the search on the same footing for every move, puts them on the playout scale, and lets the
+decision fall on an evaluated move.
+
+| part | where | what |
+|---|---|---|
+| root breadth | `csrc/tree.c` select_edge, `MCTS.set_root_breadth` | v1's minimum root visits, scaled for millions of simulations: a root move the model proposed ("candidate": llm / more edges) is selected first while its visits are below max(`root_min_floor` 64, `root_min_frac` 1% of the root's visits); unconventional and scout moves ("explore") below max(32, 0.5%). The service sets the classes from the DAG's LLM edges whenever the root gets an evaluation; `advance` / `set_root` clear them; they are saved with the tree. Replaces the 0.05 prior floor of mcts-llm (`root_explore_prior`, now 0 = off). |
+| root noise | select_edge | v1 semantics: root priors p -> (1 - x) p + x / moves. `MCTSConfig.root_noise` 0 (code paths as before); `play` and `llm-search` pass `--root-noise` 0.25 (v1's value). |
+| re-armable hooks | `MCTS.rearm(key)` | clears the node's hooked flag: it fires again on its next visit (if within `hook_depth` or at `n_thr` visits). The service records the nodes of requests dropped by the queue cap, as stale, or whose result arrived stale, and re-arms them once the queue has a quarter free and the node is in the root's subtree; a re-fired event is then taken as new (from the DAG if it holds the evaluation). |
+| subtree query | `MCTS.in_subtree(key)`, `subtree_mask()` | exact reachability from the current root through any move order (`mc_tree_reach`, safe during a search). One mark per root is reused: positives stay valid until the root moves, nodes created after the mark were created by simulations from this root, negatives are re-checked on a mark older than 2 s. The service uses it whenever a request's recorded path does not run through the root (after `advance`, transpositions, truncated paths). |
+| `searching` | `MCTS.searching` | public; the service's `searching` reads it (the caller's flag still works). |
+| stand-in values | select_edge, `MCTS.standin_value`, `root_stats` | a child without an external value (nx = 0) is compared through a stand-in X: the mean external value of its evaluated siblings (side to move at the children), else the negated value of its parent (its own, backed up, or its own stand-in: recursively the nearest evaluated ancestor). Q = (1 - lam) X + lam Q_playout for every sibling; the parent's own FPU uses the same footing. `MCTSConfig.standin` = "siblings" (default) / "ancestor" / "off". Only selection (and the reported q) uses it; nothing is backed up. `root_stats` reports q (as selection sees it), q_raw, q_playout, v_ext (the move's own model value, mover's winrate), evaluated, standin, breadth. |
+| priority | `LLMService.boost`, `tick` | every 5 s the 3 most-visited root moves without a model value get class TOP (above scouts / refute / lessons, below the root's own expand), creating the request if it was never raised, was dropped or failed; a root child with under 0.2% of the root's visits ranks with the deeper nodes. |
+| decision | `mcts/decide.py` | rules: `most_visits_evaluated` (the most-visited move has its own model value), `evaluated_among_top` (it has none: the most-visited move that has one among the top 4 with at least 20% of the leader's visits), `most_visits_unevaluated` (none of them has one), `most_visits` (`--decide visits`, code-only). While the leader waits for its value and a request for it can still run, the decision boosts it and searches on in chunks for at most `--decide-extend` (120 s; a tenth of the move time per chunk in `play`). Each move record has `decision` = {real, rule, lead, extension (resolved / changed / time / no_request), extended_s}. |
+| calibration | `hl/mix.py fit_calib`, `OnlineLearner.fit_calibration`, `MCTS.set_calibration` | model values enter the tree as sigmoid(a logit(v) + b). The learner fits (a, b) by logistic regression with soft labels: model value of a node (`observe_external`) against that node's playout Q after a deeper search (its sample's q_playout, at least `calib_min_visits` 1024 visits, observed after the evaluation), with a ridge toward the identity worth `calib_n0` = 10 pairs; a in [0.05, 4]. `update()` writes params `calib_a` / `calib_b` (with lam / beta, lam now fitted on the calibrated values) once 5 pairs exist; the engine picks them up with the weights and `set_calibration` re-calibrates the values already in the tree (each node's own value and the path sums of its one-time backup, exactly). `llm-search --calib online` refits it every `--calib-every` 60 s from an observe-only learner in `<run>/hl`. |
+| races | `llm.py` | a request leaves the running set only after its results are applied (also on the DAG-cache path), an inbox event counts as busy until triaged, and insert + cap-drop in `_enqueue` are one locked step (ranked by the visits seen when last ranked), so `wait_idle()` means applied and the queue never shows more than `queue_cap`. |
+
+```bash
+python3 -m mcts llm-search --sgf game.sgf --upto 22 --run <dir> --worker <Opus 5.5 xhigh spec, as above> \
+    --wrap "$PWD/bin/worker-sandbox {jobdir}" --time 720 --warmup 30 --threads 16 --llm-workers 16 \
+    --max-llm-jobs 118 --n-thr 200000 --calib-every 60 --decide-extend 180 --drain 600
+python3 -m mcts llm-search ... --llm off          # the code-only control (same engine settings and chunks)
+```
+
+**Smoke** (2026-10-07, run dir `runs/move47/mcts-calib-20261007/` next to the Chandra checkout, scripts
+`smoke-opus.sh`, `smoke-control.sh`, summary `summarize.py`): the pilot game after 22 plies (Black to play),
+the position of mcts-llm smoke (b); 30 s code-only warm-up, then 720 s of search at 16 threads with sandboxed
+Opus 5.5 xhigh (the worker spec of the section above), W=16, cap 118 sessions, n_thr 200000, calibration refit every 60 s, decision
+extension up to 180 s; the code-only control ran concurrently with the same engine settings for 900 s.
+
+| time (s) | sessions / cost | root moves with own value | calib a, b | top root moves: visits, q (* = stand-in), own model value (Black's winrate) |
+|---|---|---|---|---|
+| 0 (warm-up) | 0 | 0 | 1, 0 | H7 2.14M 0.403; D2 16k 0.402; E6 9k 0.384 |
+| 121 | 23 / 1.57 USD | 4 | 0.78, -0.16 | H7 9.31M 0.318 v0.198; B8 214k 0.319 v0.284; E6, D8, G8, E7 102k each (1% minimum) 0.276-0.311* |
+| 242 | 38 / 7.05 | 11 | 0.65, -0.30 | H7 17.3M 0.343 v0.304; B8 312k 0.350 v0.354; E6 187k 0.336 v0.304; E7 187k 0.298* |
+| 371 | 53 / 11.35 | 16 | 0.60, -0.29 | H7 19.3M 0.357 v0.320; B2 1.71M 0.396 v0.400; B8 1.47M 0.303 v0.367 |
+| 624 | 81 / 23.92 | 26 | 0.50, -0.22 | H7 25.3M 0.371 v0.345; B2 6.74M 0.343 v0.413; B8 1.47M 0.317 v0.385 |
+| 893 (decision) | 104 / 32.52 | 35 | 0.47, -0.20 | H7 27.4M 0.366 v0.352; B2 6.74M 0.355 v0.417; E1 6.22M 0.344 v0.390; E3 3.08M 0.386 v0.417; B8 1.47M 0.318 v0.390; E7 475k 0.296 v0.267 |
+
+- Decision: H7 by `most_visits_evaluated` (H7's own model value: White 0.85, calibrated to 0.352 for Black);
+  no extension was needed: the boost kept the most-visited root moves evaluated (35 boosts). The 12 most-visited
+  root moves all had their own value; 35 root moves in all. The root's evaluation: E7 0.55, E6 0.28, Black 0.12
+  (mcts-llm: E7 0.60, E6 0.28, 0.10); E7 got its value this time (White 0.93) and its 1% minimum (475k visits).
+- Sessions: 104 (103 expand, 1 refute), 104 accepted, 0 failed, 43.21 USD with the 16 sessions that finished
+  after the decision (no new sessions after it; they finished in the drain, the last after 844 s); median 117 s
+  and 0.31 USD per session. 139 requests for deeper nodes were still queued at the decision. Wall time to the
+  decision 893 s for 720 s of search (the pause between 60 s chunks grew from 0.5 s to 15-25 s after about
+  4 minutes, when about 19M simulations had filled the 20M-node tree, so eviction most likely ran at each chunk
+  start; not measured separately); 45.3M simulations.
+- Calibration learned on the run's 52 (model value, deeper playout Q) pairs: a = 0.468, b = -0.203 (unshrunk
+  0.303, -0.060), squared error against the deeper playout Q 0.0490 with the identity, 0.0039 with the map. The
+  model's values after Black moves (White 0.76-0.95) enter as 0.58-0.75. lam / beta kept their defaults: 19
+  matched pairs with a deeper search of at least twice the visits (20 needed).
+- Control (code only, 900 s, 65.4M simulations): H7 55.9M visits, q 0.394; D2 6.7M 0.353; C7 1.5M 0.353. Same
+  move as the hybrid.
+- mcts-llm smoke (b) for comparison (W=8, cap 16 sessions, no calibration, no stand-in): J3, a move without a
+  model value (8.8M visits, q 0.341, prior 0.001), most visited at the end; 216 requests still queued, E7's child
+  among them.
+
+Tests (no model): `tests/test_mcts_calib.py` (17: root breadth and its persistence, root noise, re-arm, exact
+subtree query incl. during a search and another move order, `searching`, stand-in values and their sign, the
+lam = 0 sign check that unevaluated moves do not win by default, the decision rules and the bounded extension,
+the calibration fit on synthetic data, the learner writing calib params and the engine applying them, exact
+re-calibration of values in the tree, the service's root breadth, boost, re-arming of dropped requests, exact
+subtree in the service) and the two race tests in `tests/test_mcts_llm.py`.
+
+Limits: the calibration target is the deeper search's playout Q, so it puts model values on the playout scale
+rather than judging which is right, and lam fitted against the same target leans toward the playouts [HOLE];
+a stand-in is used for selection only (nothing is backed up with it); re-calibration corrects each value's
+one-time backup exactly, while values a simulation carried up from an evaluated leaf keep their old map; the
+decision thresholds (top 4, 20% share, extension 120 s) are not tuned.

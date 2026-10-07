@@ -17,6 +17,14 @@ The engine's ``on_expand`` hook only appends the event to an inbox.  One dispatc
      The priors passed are the union of every LLM edge the DAG holds for the position, so later
      jobs (scouts, refutes) add to the node's external priors instead of replacing them.
 
+Root breadth and re-asking (node move47::mcts-calib): the moves the model proposes at the root get
+minimum visits in the engine (``MCTS.set_root_breadth``: "candidate" for llm / more edges,
+"explore" for unconventional and scout edges); every few seconds the most-visited root moves
+without a model value of their own get the top priority (``boost``), also at decision time
+(mcts/decide.py); a request dropped by the queue cap or as stale re-arms its node's hook
+(``MCTS.rearm``) once the queue has room and the node is in the root's subtree again
+(``MCTS.in_subtree``, exact for any move order), so the node asks again on its next visit.
+
 Failures (rate limits, overload, sessions that end without an answer, timeouts) are classified
 from the JobResult and the session log; rate limits and overload pause dispatching with
 exponential backoff and halve the number of concurrent sessions (raised again by one after
@@ -24,13 +32,14 @@ successes).  Nothing here raises into the search: the search never waits for the
 """
 from __future__ import annotations
 
+import inspect
 import itertools
 import json
 import re
 import threading
 import time
 import traceback
-from collections import deque
+from collections import OrderedDict, deque
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, fields
 from pathlib import Path
@@ -49,8 +58,9 @@ from .board import Board
 
 FL_EXT = 2                                    # mcts.tree flag: external priors merged at the node
 LLM_SOURCES = ("llm", "unconventional", "refute", "more", "scout")   # DAG edge sources that are LLM priors
-# priority classes (lower first)
-CLS_ROOT, CLS_BREADTH, CLS_CHILD, CLS_DEEP = 0, 1, 2, 3
+EXPLORE_SOURCES = ("unconventional", "scout")   # root breadth class "explore"; other LLM sources: "candidate"
+# priority classes (lower first); CLS_TOP: root moves the search ranks high that lack a model value
+CLS_ROOT, CLS_TOP, CLS_BREADTH, CLS_CHILD, CLS_DEEP = 0, 1, 2, 3, 4
 USAGE_KEYS = ("input", "output", "cache_read", "cache_write")
 
 RATE_RE = re.compile(r"rate[_ -]?limit|\b429\b|too many requests|usage limit|limit reached|quota exceeded", re.I)
@@ -71,8 +81,15 @@ class LLMConfig:
     u_root: int = 4                 # v1: unconventional candidates at the root / elsewhere
     u_node: int = 1
     unconv_prior: float = 0.03      # v1: DAG prior of an unconventional candidate
-    root_explore_prior: float = 0.05  # at the root, unconventional and scout moves get at least this
-                                      # external prior (stands in for v1's minimum root visits)
+    root_explore_prior: float = 0.0   # optional prior floor for unconventional / scout moves at the root
+                                      # (mcts-llm's stand-in; superseded by root_breadth)
+    root_breadth: bool = True       # root moves the model proposed get minimum visits in the engine
+    boost_top: int = 3              # the most-visited root moves without a model value: top priority ...
+    boost_every_s: float = 5.0      # ... re-checked this often (tick())
+    child_min_share: float = 0.002  # a root child with less than this share of the root's visits ranks as deep
+    rearm: bool = True              # re-arm the hooks of dropped requests once the queue has room
+    rearm_every_s: float = 2.0
+    boost_max_new: int = 2          # boost() creates a request for a position at most this often
     scouts: bool = True             # v1 regional scouts at every new root (v1 regions(): none below 13x13)
     scout_values: bool = False      # back up a scout's value too (it only looked at one region)
     refute: bool = True             # critic job on the current most-visited root move, once per root
@@ -125,6 +142,7 @@ class Request:
     created: float = field(default_factory=time.time)
     started: float = 0.0
     seq: int = 0
+    vis: int = -1                   # the targets' visits when last ranked (queue-cap ranking)
 
     @property
     def rid(self) -> tuple:
@@ -228,6 +246,12 @@ class LLMService:
         self._seen: dict[int, str] = {}       # engine key -> DAG key, for every node handled in this tree
         self._done_dkeys: set[str] = set()    # expand requests finished OK by this service
         self._seq = itertools.count()
+        self._dropped: "OrderedDict[int, float]" = OrderedDict()   # engine keys of dropped requests
+        self._rearm_t = 0.0
+        self._boost_t = 0.0
+        self._boost_new: dict[str, int] = {}      # DAG key -> requests boost() created (at most boost_max_new)
+        self._searching_flag = False
+        self._inflight = 0                    # inbox events being triaged (wait_idle counts them as busy)
         self.eng = None
         self.epoch = 0
         self.root_key: Optional[int] = None
@@ -243,11 +267,23 @@ class LLMService:
         self.ctr: dict[str, float] = {k: 0 for k in (
             "events", "inbox_dropped", "followers", "cache_hits", "queued", "cap_dropped", "stale_dropped",
             "launched", "ok", "failed", "rate_limited", "overloaded", "retried", "abandoned", "applied",
-            "applied_mid_search", "stale_results", "learner_calls", "cost_usd", "job_seconds", *USAGE_KEYS)}
+            "applied_mid_search", "stale_results", "learner_calls", "rearmed", "boosted", "root_breadth_sets",
+            "cost_usd", "job_seconds", *USAGE_KEYS)}
         self._pool = ThreadPoolExecutor(max_workers=max(1, self.cfg.workers), thread_name_prefix="llm-job")
         self._thread: Optional[threading.Thread] = None
         self._stop = False
-        self.searching = False                # set by the caller around search() (statistics only)
+        self._obs_extra = bool(learner is not None and hasattr(learner, "observe_external")
+                               and _accepts_kwargs(learner.observe_external))
+
+    @property
+    def searching(self) -> bool:
+        """Whether the attached engine is searching (MCTS.searching), or the caller said so."""
+        eng = self.eng
+        return self._searching_flag or bool(eng is not None and getattr(eng, "searching", False))
+
+    @searching.setter
+    def searching(self, v: bool) -> None:
+        self._searching_flag = bool(v)
 
     # ================================================================ lifecycle
     def start(self) -> "LLMService":
@@ -286,6 +322,7 @@ class LLMService:
         with self._lock:
             self.epoch += 1
             self._seen.clear()
+            self._dropped.clear()
             for rid, r in list(self._queue.items()):
                 if r.kind != "abstract":
                     del self._queue[rid]
@@ -300,6 +337,7 @@ class LLMService:
             self.eng = None
         with self._lock:
             self.epoch += 1
+            self._dropped.clear()
             for rid, r in list(self._queue.items()):
                 if r.kind != "abstract":
                     del self._queue[rid]
@@ -329,29 +367,46 @@ class LLMService:
             self.root_label = label
             self.root_t0 = time.time()
             self._refuted = not self.cfg.refute
-            for rid, r in list(self._queue.items()):
-                if r.kind == "abstract":
+            items = [(rid, r, list(r.targets)) for rid, r in self._queue.items() if r.kind != "abstract"]
+        # liveness outside the service lock (the exact subtree query asks the engine)
+        live_of = {rid: [t for t in tg if self._in_subtree(t)] for rid, r, tg in items}
+        dropped = []
+        with self._lock:
+            for rid, r, tg in items:
+                if self._queue.get(rid) is not r:
                     continue
-                live = [t for t in r.targets if self._in_subtree(t)]
+                live = live_of[rid]
                 if not live:
                     del self._queue[rid]
                     self.ctr["stale_dropped"] += 1
+                    dropped.extend(tg)
                     continue
+                dropped.extend(t for t in r.targets if t not in live)
                 r.targets = live
                 r.cls = min(self._cls_of(r.kind, t) for t in live)
+            self._note_dropped(dropped)
         tgt = Target(rkey, board, [rkey], s, 0)
         self._request_node(tgt, dkey, can, root=True)
         if self._has_eval(dkey):
+            self._set_root_breadth()
             self._request_scouts()
         self._wake.set()
 
     def tick(self) -> None:
-        """Call from the search's control thread (e.g. inside search's stop callable): launches the
-        refute of the current top move once the root has been searched for refute_after_s."""
+        """Call from the search's control thread (e.g. inside search's stop callable): raises the
+        priority of the most-visited root moves without a model value (every boost_every_s) and
+        launches the refute of the current top move once the root has been searched for
+        refute_after_s."""
         now = time.time()
         if now - self._tick_t < 1.0:
             return
         self._tick_t = now
+        if self.cfg.boost_top > 0 and now - self._boost_t >= self.cfg.boost_every_s and self.root_key is not None:
+            self._boost_t = now
+            try:
+                self.boost(self.top_unevaluated(self.cfg.boost_top))
+            except Exception as e:   # never into the search
+                self.log(f"llm: boost failed: {e!r}")
         if self._refuted or self.root_key is None or now - self.root_t0 < self.cfg.refute_after_s:
             return
         with self._eng_lock:
@@ -374,6 +429,90 @@ class LLMService:
                     cls=CLS_BREADTH, epoch=self.epoch, root_label=self.root_label)
         self._enqueue(r)
         self.log(f"llm: refute of the top move {coord(top['move'], board.size)} queued (n={top['n']})")
+
+    def top_unevaluated(self, k: int) -> list:
+        """The k most-visited root moves (real frame) whose node has no model value of its own."""
+        with self._eng_lock:
+            eng = self.eng
+            if eng is None or int(eng.a.key[eng.root]) != self.root_key:
+                return []
+            ch = sorted((c for c in eng.children(eng.root) if c["n"] > 0), key=lambda c: -c["n"])
+        out = []
+        for c in ch:
+            if len(out) >= k:
+                break
+            if not c.get("evaluated"):
+                out.append(c["move"])
+        return out
+
+    def boost(self, moves) -> int:
+        """Top priority (CLS_TOP) for the evaluation of these root moves (real frame), creating the
+        request if there is none (it was never raised, was dropped, or failed); a move whose
+        evaluation the DAG already holds is applied at once.  Returns how many of the moves have a
+        request that can still run (queued and dispatchable, or running) or got their value now."""
+        if self.root_board is None or self.root_key is None:
+            return 0
+        board0, rkey = self.root_board, self.root_key
+        n_ok = 0
+        for m in moves or []:
+            try:
+                board = board0.played(m)
+            except Exception:
+                continue
+            if board.terminal:
+                continue
+            key = board.key
+            if self._node_value(key) is not None:
+                n_ok += 1
+                continue
+            dkey, can, s = canonical_of(board)
+            rid = ("expand", dkey, "")
+            tgt = Target(key, board, [rkey, key], s, 1)
+            with self._lock:
+                have = self._queue.get(rid) or self._running.get(rid)
+                if have is not None:
+                    if all(t.key != key for t in have.targets):
+                        have.targets.append(tgt)
+                    if have.cls > CLS_TOP:
+                        have.cls = CLS_TOP
+                        self.ctr["boosted"] += 1
+                    running = rid in self._running
+                    capped = bool(self.cfg.max_jobs and self.ctr["launched"] >= self.cfg.max_jobs)
+                    n_ok += 1 if (running or (not capped and not self._manual_pause)) else 0
+                    self._seen[key] = dkey
+                    self._dropped.pop(key, None)
+                    continue
+                self._seen[key] = dkey
+                self._dropped.pop(key, None)
+            if self.cfg.cache and self._has_eval(dkey):
+                self._apply(tgt, dkey, value=self._static(dkey), cached=True, kind="expand")
+                with self._lock:
+                    self.ctr["cache_hits"] += 1
+                n_ok += 1 if self._node_value(key) is not None else 0
+                continue
+            with self._lock:
+                capped = bool(self.cfg.max_jobs and self.ctr["launched"] >= self.cfg.max_jobs)
+                tries = self._boost_new.get(dkey, 0)
+                if not capped and tries < self.cfg.boost_max_new:
+                    self._boost_new[dkey] = tries + 1
+            if capped or tries >= self.cfg.boost_max_new:   # e.g. its sessions keep failing
+                continue
+            r = Request("expand", dkey, can, [tgt], params={"k": self.cfg.k_node, "u": self.cfg.u_node},
+                        cls=CLS_TOP, root_label=self.root_label)
+            self._enqueue(r)
+            with self._lock:
+                self.ctr["boosted"] += 1
+            n_ok += 1
+        self._wake.set()
+        return n_ok
+
+    def _node_value(self, key: int) -> Optional[float]:
+        with self._eng_lock:
+            eng = self.eng
+            if eng is None:
+                return None
+            i = eng.find(key)
+            return None if i < 0 else eng.ext_value(i)
 
     def request_abstract(self, stats: list[dict], best: Optional[int], root_q: Optional[float],
                          root_n: int, label: str = "") -> bool:
@@ -400,7 +539,7 @@ class LLMService:
         with self._lock:
             out = dict(self.ctr)
             out.update(queue=len(self._queue), running=len(self._running), inbox=len(self._inbox), w_cur=self.w_cur,
-                       paused_s=max(0.0, round(self.paused_until - time.time(), 1)))
+                       paused_s=max(0.0, round(self.paused_until - time.time(), 1)), dropped=len(self._dropped))
         out["cost_usd"] = round(out["cost_usd"], 4)
         return out
 
@@ -416,7 +555,7 @@ class LLMService:
         t_end = time.time() + timeout
         while time.time() < t_end:
             with self._lock:
-                busy = bool(self._inbox) or bool(self._running)
+                busy = bool(self._inbox) or bool(self._running) or self._inflight > 0
                 if queue_too and not busy and self._queue and not self._manual_pause and \
                         (not self.cfg.max_jobs or self.ctr["launched"] < self.cfg.max_jobs):
                     busy = True
@@ -433,10 +572,37 @@ class LLMService:
             if e.source not in LLM_SOURCES:
                 continue
             p = float(e.prior)
-            if root and e.source in ("unconventional", "scout"):
+            if root and e.source in EXPLORE_SOURCES and self.cfg.root_explore_prior > 0:
                 p = max(p, self.cfg.root_explore_prior)
             out[e.move] = max(out.get(e.move, 0.0), p)
         return out
+
+    def llm_breadth(self, dag_key: str) -> dict:
+        """{canonical move: "candidate" | "explore"} of the LLM edges (a move proposed both ways is a
+        candidate)."""
+        out: dict = {}
+        for e in self.dag.edges(dag_key):
+            if e.source not in LLM_SOURCES:
+                continue
+            c = "explore" if e.source in EXPLORE_SOURCES else "candidate"
+            if out.get(e.move) != "candidate":
+                out[e.move] = c
+        return out
+
+    def _set_root_breadth(self) -> int:
+        """The root's LLM moves get the engine's minimum visits (real frame)."""
+        if not self.cfg.root_breadth or self.root_board is None or not self.root_dag:
+            return 0
+        size = self.root_board.size
+        cls = {to_real(m, self.root_s, size): c for m, c in self.llm_breadth(self.root_dag).items()}
+        with self._eng_lock:
+            eng = self.eng
+            if eng is None or int(eng.a.key[eng.root]) != self.root_key or not hasattr(eng, "set_root_breadth"):
+                return 0
+            n = eng.set_root_breadth(cls)
+        with self._lock:
+            self.ctr["root_breadth_sets"] += 1
+        return n
 
     def root_llm_priors(self) -> dict:
         """{real move: prior} of the LLM edges at the current root (empty without an evaluation)."""
@@ -451,9 +617,61 @@ class LLMService:
 
     # ================================================================ internals: requests
     def _in_subtree(self, t: Target) -> bool:
+        """Is the target node reachable from the current root?  Its recorded path running through the
+        root proves it (those links stay); otherwise the engine's exact query decides (another move
+        order, a truncated path)."""
         if self.root_key is None:
             return True
-        return self.root_key in t.path or len(t.path) >= EV_PATH_MAX
+        if self.root_key in t.path:
+            return True
+        with self._eng_lock:
+            eng = self.eng
+            if eng is None:
+                return False
+            if not hasattr(eng, "in_subtree"):
+                return len(t.path) >= EV_PATH_MAX
+            return bool(eng.in_subtree(t.key))
+
+    def _note_dropped(self, targets) -> None:
+        """Remember dropped targets (caller holds _lock): their hooks are re-armed later."""
+        if not self.cfg.rearm:
+            return
+        now = time.time()
+        for t in targets:
+            self._dropped.pop(t.key, None)
+            self._dropped[t.key] = now
+            self._seen.pop(t.key, None)
+        while len(self._dropped) > 100_000:
+            self._dropped.popitem(last=False)
+
+    def _rearm_dropped(self, now: float) -> int:
+        """Re-arm the hooks of dropped nodes that are in the root's subtree, while the queue has room
+        (at most a quarter of it per round, newest drops first): such a node raises its request
+        again on its next visit, ranked by the visits it has then."""
+        if not self.cfg.rearm or now - self._rearm_t < self.cfg.rearm_every_s:
+            return 0
+        self._rearm_t = now
+        with self._lock:
+            room = self.cfg.queue_cap - len(self._queue)
+            if room < self.cfg.queue_cap // 4 or not self._dropped:
+                return 0
+            keys = list(reversed(self._dropped))[:500]
+        budget, done = max(1, room // 4), []
+        with self._eng_lock:                     # never nested with _lock
+            eng = self.eng
+            if eng is None or not hasattr(eng, "rearm"):
+                return 0
+            for k in keys:
+                if len(done) >= budget:
+                    break
+                if eng.in_subtree(k) and eng.rearm(k):
+                    done.append(k)
+        if done:
+            with self._lock:
+                for k in done:
+                    self._dropped.pop(k, None)
+                self.ctr["rearmed"] += len(done)
+        return len(done)
 
     def _depth(self, t: Target) -> int:
         if self.root_key is not None and self.root_key in t.path:
@@ -474,8 +692,10 @@ class LLMService:
         return bool(self.dag.q1("SELECT 1 AS x FROM mcts_tags WHERE key=? AND kind=? AND tag=?", (dkey, kind, tag)))
 
     def _enqueue(self, r: Request) -> bool:
-        """Queue r unless the same request is queued or running (its targets then follow that one)."""
-        drop = None
+        """Queue r unless the same request is queued or running (its targets then follow that one).
+        Insert and cap are one atomic step: beyond queue_cap the lowest-ranked request (class, then
+        the visits it had when last ranked, then age) is dropped before the lock is released."""
+        r.vis = self._visits(r)                       # engine lookup outside the service lock
         with self._lock:
             have = self._queue.get(r.rid) or self._running.get(r.rid)
             if have is not None:
@@ -487,16 +707,13 @@ class LLMService:
             r.epoch = self.epoch
             self._queue[r.rid] = r
             self.ctr["queued"] += 1
-            if len(self._queue) > self.cfg.queue_cap:
+            while len(self._queue) > self.cfg.queue_cap:
                 cands = [q for q in self._queue.values() if q.kind != "abstract" and q.cls > CLS_BREADTH] or \
                     list(self._queue.values())
-                drop = cands
-        if drop:
-            scored = [(q.cls, -self._visits(q), q.seq, q) for q in drop]
-            worst = max(scored, key=lambda x: x[:3])[3]
-            with self._lock:
-                if self._queue.pop(worst.rid, None) is not None:
-                    self.ctr["cap_dropped"] += 1
+                worst = max(cands, key=lambda q: (q.cls, -q.vis, q.seq))
+                del self._queue[worst.rid]
+                self.ctr["cap_dropped"] += 1
+                self._note_dropped(worst.targets)
         self._wake.set()
         return True
 
@@ -567,38 +784,50 @@ class LLMService:
             try:
                 self._drain_inbox()
                 self._dispatch()
+                self._rearm_dropped(time.time())
             except Exception as e:  # the service must never take the search down
                 self.log(f"llm: dispatcher error {e!r}\n{traceback.format_exc()}")
                 time.sleep(1.0)
 
     def _drain_inbox(self, limit: int = 5000) -> None:
         for _ in range(limit):
+            with self._lock:                          # pop and mark in flight atomically (wait_idle)
+                try:
+                    epoch, ev = self._inbox.popleft()
+                except IndexError:
+                    return
+                self._inflight += 1
             try:
-                epoch, ev = self._inbox.popleft()
-            except IndexError:
-                return
-            if epoch != self.epoch or self.eng is None:
-                continue
-            with self._lock:
-                self.ctr["events"] += 1
-                prev = self._seen.get(ev.key)
-            if prev is not None:
-                # handled earlier in this tree; an event again means the node was evicted and
-                # re-created, so it lost its external priors: re-apply a known evaluation
-                if prev in self._done_dkeys and not self._node_has_ext(ev.key) and self._has_eval(prev):
-                    dkey, _, s = canonical_of(ev.board)
-                    self._apply(Target(ev.key, ev.board, list(ev.path), s, ev.depth), dkey,
-                                value=self._static(dkey), cached=True, kind="expand")
-                    with self._lock:
-                        self.ctr["cache_hits"] += 1
-                continue
-            dkey, can, s = canonical_of(ev.board)
-            tgt = Target(ev.key, ev.board, list(ev.path), s, ev.depth)
-            if not self._in_subtree(tgt):
+                self._triage(epoch, ev)
+            finally:
                 with self._lock:
-                    self.ctr["stale_dropped"] += 1
-                continue
-            self._request_node(tgt, dkey, can)
+                    self._inflight -= 1
+
+    def _triage(self, epoch: int, ev) -> None:
+        """One hook event: follow, serve from the DAG, or queue an expand request."""
+        if epoch != self.epoch or self.eng is None:
+            return
+        with self._lock:
+            self.ctr["events"] += 1
+            prev = self._seen.get(ev.key)
+        if prev is not None:
+            # handled earlier in this tree; an event again means the node was evicted and
+            # re-created, so it lost its external priors: re-apply a known evaluation
+            if prev in self._done_dkeys and not self._node_has_ext(ev.key) and self._has_eval(prev):
+                dkey, _, s = canonical_of(ev.board)
+                self._apply(Target(ev.key, ev.board, list(ev.path), s, ev.depth), dkey,
+                            value=self._static(dkey), cached=True, kind="expand")
+                with self._lock:
+                    self.ctr["cache_hits"] += 1
+            return
+        dkey, can, s = canonical_of(ev.board)
+        tgt = Target(ev.key, ev.board, list(ev.path), s, ev.depth)
+        if not self._in_subtree(tgt):
+            with self._lock:
+                self.ctr["stale_dropped"] += 1
+                self._note_dropped([tgt])
+            return
+        self._request_node(tgt, dkey, can)
 
     def _dispatch(self) -> None:
         while not self._stop:
@@ -615,10 +844,14 @@ class LLMService:
                 return
             if r.kind == "expand" and self.cfg.cache and self._has_eval(r.dag_key):
                 with self._lock:                      # the DAG got this evaluation meanwhile
-                    self._running.pop(r.rid, None)
                     targets = list(r.targets)
                     self.ctr["cache_hits"] += 1
                 self._apply_all(r, value=self._static(r.dag_key), cached=True, targets=targets)
+                with self._lock:                      # released after applying (wait_idle means applied)
+                    late = [t for t in r.targets if t.key not in {x.key for x in targets}]
+                    self._running.pop(r.rid, None)
+                if late:
+                    self._apply_all(r, value=self._static(r.dag_key), cached=True, targets=late)
                 continue
             try:
                 job = self._build_job(r)
@@ -636,6 +869,10 @@ class LLMService:
         with self._lock:
             items = list(self._queue.values())
             delay_until = self.root_t0 + self.cfg.dispatch_delay_s
+        root_n = 0
+        with self._eng_lock:
+            if self.eng is not None:
+                root_n = int(self.eng.a.n[self.eng.root])
         scored = []
         stale = []
         for r in items:
@@ -653,11 +890,17 @@ class LLMService:
                 continue
             if r.cls >= CLS_CHILD and now < delay_until:
                 continue
-            scored.append(((r.cls, -self._visits(r), r.seq), r))
+            vis = self._visits(r)
+            r.vis = vis
+            cls = r.cls
+            if cls == CLS_CHILD and root_n and vis < self.cfg.child_min_share * root_n:
+                cls = CLS_DEEP                            # a root child the search hardly visits
+            scored.append(((cls, -vis, r.seq), r))
         with self._lock:
             for r in stale:
                 if self._queue.pop(r.rid, None) is not None:
                     self.ctr["stale_dropped"] += 1
+                    self._note_dropped(r.targets)
             for _, r in sorted(scored, key=lambda x: x[0]):
                 if self._queue.pop(r.rid, None) is not None:
                     self._running[r.rid] = r
@@ -733,7 +976,6 @@ class LLMService:
                 v = self._write_dag(r, job, res)
             with self._lock:
                 self.ctr["ok"] += 1
-                self._running.pop(r.rid, None)
                 if r.kind == "expand":
                     self._done_dkeys.add(r.dag_key)
                 targets = list(r.targets)
@@ -750,6 +992,15 @@ class LLMService:
                 rec["applied"] = self._apply_all(r, value=value, cached=False, targets=targets, job_id=job.id)
                 rec["value"] = v
                 rec["n_candidates"] = len(res.result.get("candidates", [])) + len(res.result.get("unconventional", []))
+            # the slot is released only after the results are applied (wait_idle means applied);
+            # followers that joined meanwhile get the result too
+            with self._lock:
+                seen_keys = {t.key for t in targets}
+                late = [t for t in r.targets if t.key not in seen_keys]
+                self._running.pop(r.rid, None)
+            if r.kind != "abstract":
+                if late:
+                    rec["applied"] += self._apply_all(r, value=value, cached=False, targets=late, job_id=job.id)
                 if r.kind == "expand" and r.cls == CLS_ROOT and r.dag_key == self.root_dag:
                     self._request_scouts()
         else:
@@ -865,25 +1116,40 @@ class LLMService:
         if not self._in_subtree(t):
             with self._lock:
                 self.ctr["stale_results"] += 1
+                self._note_dropped([t])          # the DAG has it now: served from there if it comes back
             return 0
         with self._eng_lock:
             eng = self.eng
             if eng is None:
                 return 0
             out = eng.set_external(t.key, priors=pri_real or None, value=value, source="llm", position=t.board)
-            searching = self.searching or bool(getattr(eng, "_searching", False))
+            searching = self.searching
+            i = eng.find(t.key)
+            n_at = int(eng.a.n[i]) if i >= 0 else 0
+            mv = ""
+            if i >= 0 and not is_root and int(eng.a.key[eng.root]) == self.root_key and eng.a.state[eng.root] == 2:
+                e0, ne = int(eng.a.estart[eng.root]), int(eng.a.nedges[eng.root])
+                hit = (eng.a.e_child[e0:e0 + ne] == i).nonzero()[0]
+                if len(hit):
+                    m = int(eng.a.e_move[e0 + int(hit[0])])
+                    mv = f" {coord(None if m < 0 else m, size)}"
+        if is_root and pri_real:
+            self._set_root_breadth()
         with self._lock:
             self.ctr["applied"] += 1
             if searching:
                 self.ctr["applied_mid_search"] += 1
         top = sorted(pri_real.items(), key=lambda kv: -kv[1])[:4]
-        self.log(f"llm: {'cache' if cached else f'job {job_id}'} {kind} {dkey[:8]} depth {self._depth(t)} sym {t.s}"
+        cal = out.get("value")
+        self.log(f"llm: {'cache' if cached else f'job {job_id}'} {kind} {dkey[:8]} depth {self._depth(t)}{mv} sym {t.s}"
                  f" -> priors {' '.join(f'{coord(m, size)}:{p:.2f}' for m, p in top)}"
                  + (f" value {value:.2f}" if value is not None else "")
+                 + (f" (calibrated {cal:.3f})" if cal is not None and value is not None and abs(cal - value) > 5e-4 else "")
                  + f" ({'applied' if out.get('applied') else 'pending'}{', mid-search' if searching else ''})")
         if self.learner is not None and hasattr(self.learner, "observe_external"):
             try:
-                self.learner.observe_external(position=t.board, source="llm", priors=pri_real, value=value)
+                kw = {"n": n_at} if self._obs_extra else {}
+                self.learner.observe_external(position=t.board, source="llm", priors=pri_real, value=value, **kw)
                 with self._lock:
                     self.ctr["learner_calls"] += 1
             except Exception as e:
@@ -896,6 +1162,13 @@ class LLMService:
         with self._lock:
             with open(self.record, "a") as f:
                 f.write(json.dumps(rec, default=str) + "\n")
+
+
+def _accepts_kwargs(fn) -> bool:
+    try:
+        return any(p.kind is inspect.Parameter.VAR_KEYWORD for p in inspect.signature(fn).parameters.values())
+    except (TypeError, ValueError):
+        return False
 
 
 def abstract_context(stats: list[dict], llm_can: dict, s: int, size: int, root_q: Optional[float],

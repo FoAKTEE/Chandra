@@ -98,6 +98,13 @@ Why: v1 is PUCT in which every simulation is one LLM session, so a move gets abo
 (pilot: the chosen move had 8 to 25 root visits; lost at 1.21 points per move). v2 decouples
 simulations from LLM calls, as AlphaGo did with its policy network.
 
+**Principle (user steer 2026-10-07, later the same day).** We do not train an MCTS from scratch.
+The method is LLM reasoning and MCTS together, learned through Heuristic Learning: the model proposes
+candidates, values and lessons; the search tests them over millions of simulations; the learner
+distils what the combined search agrees on into explicit heuristics (weights and readable,
+model-written rules) that guide the next searches, game after game. Code-only MCTS is an ablation
+baseline, never the method.
+
 - **Simulations (code, fast).** PUCT with progressive widening over a transposition-aware tree,
   virtual loss, many threads. Leaf value `V = (1-lam)*v_llm + lam*z_playout`; a node without an LLM
   value uses the playout result and the learned value head. Playouts run to the end of the game
@@ -131,9 +138,12 @@ simulations from LLM calls, as AlphaGo did with its policy network.
 | `move47::mcts-hl` | M7 | mcts-engine | online learning of policy, value, `lam`, `beta`; versioned weight store; regression set; tests show learned weights predict held-out search targets better than the initial ones |
 | `move47::mcts-llm` | M8 | mcts-engine, worker-sandbox | async expansion queue with sandboxed Opus xhigh workers, prior and value blending, rate-limit backoff, arena play loop that keeps the tree; mock tests and a small real smoke |
 | `move47::mcts-calib` | M8b | mcts-llm, mcts-hl | root breadth in the engine (minimum visits for model-proposed and unconventional root moves, prior noise), re-armable expansion hooks, a root-subtree query; root moves without a model value no longer win by default (stand-in value from the parent's evaluation, and the decision only on an evaluated move); model values calibrated to the playout scale online; an Opus smoke on the integration-smoke position decides on an evaluated move |
-| `move47::mcts-strength` | M9 | mcts-calib, arena-gpu | code-only and hybrid MCTS against k1-p and the calibrated ladder; time and cost per move |
+| `move47::mcts-llm-hl` | M7b | mcts-calib | learning from model reasoning plus search: training targets from hybrid play (model-informed visit distributions, model priors and calibrated values at evaluated nodes); after each decision a model heuristic job reads the search's surprises, the lessons and the current heuristics and proposes explicit changes (new rule features or weight changes with a rationale), compiled, regression-gated and kept as a versioned, readable heuristics book with provenance; evidence from hybrid play |
+| `move47::mcts-ablation` | M9a | mcts-calib, arena-gpu | offline judge tool and the ply-22 reproduction; calibrated-ladder arena; small code-only baseline (lv7, lv8, k1-full) as the ablation reference |
+| `move47::mcts-strength` | M9 | mcts-llm-hl, mcts-ablation | the full system (model + MCTS + heuristic learning) against k1-p and the calibrated ladder, compared with the code-only ablation and v1; time and cost per move |
 | `move47::mcts-game` | M10 | mcts-strength | one full 9x9 game against k1-full with no cost cap, tree and weights carried across moves; report and review like the pilot |
 
 Waves: **W4** mcts-engine with the ledger update · **W5** mcts-hl and mcts-llm · **W5b** mcts-calib
 (added 2026-10-07: the mcts-llm smoke chose a move with no model evaluation, because model values sat
-below the playouts) · **W6** mcts-strength · **W7** mcts-game.
+below the playouts) · **W5c** mcts-llm-hl with **W6a** mcts-ablation · **W6** mcts-strength (full system) · **W7**
+mcts-game.

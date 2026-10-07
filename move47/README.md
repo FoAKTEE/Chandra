@@ -160,3 +160,104 @@ and must authenticate: the KataGo backend token lives in the masked rendezvous d
 
 Tests (no model): `python3 -m pytest -q tests/test_worker_sandbox.py -p no:cacheprovider` (canary with
 plain commands, the fake agent through the sandbox, command construction).
+
+## MCTS v2 engine (code side, `mcts/`)
+
+MISSION.md section 5, node `move47::mcts-engine`. This package runs simulations as code only, so
+that later nodes can add asynchronous LLM expansion (M8) and online learning of the weights (M7)
+without touching the hot loop. It is independent of gotree's v1 tree (`gotree/`), which is
+unchanged. It reuses `gotree.position` for coordinates and as the reference for the rules.
+
+**Build.** The C core in `mcts/csrc/` (board, features, playouts, tree hot loop) compiles itself
+with gcc on first import into `mcts/.build/` (gitignored). The library is named by a hash of the
+sources, flags and compiler, so an edited source rebuilds it. To build explicitly, or to see a
+compiler error: `python3 -m mcts build [--force]`. Set `MCTS_CC` / `MCTS_BUILD_DIR` to override
+the compiler and the output directory.
+
+```bash
+python3 -m mcts bestmove --sgf data/alphago-leesedol-2016-g2.sgf --upto 36 --time 10 --threads 16
+python3 -m mcts selfplay --size 9 --time 1 --games 1 [--run-dir <outside Chandra> --save-tree]
+python3 -m mcts bench --threads 1,8,16,32 --time 5      # sims/s, empty 9x9 and a constructed midgame
+python3 -m mcts arena --url http://127.0.0.1:8080 --token $T --opponent k1-p --time 10 --threads 32
+python3 -m mcts weights [--write-default]
+```
+
+```python
+from mcts.board import Board
+from mcts.tree import MCTS, MCTSConfig
+eng = MCTS(Board(9, 7.5), config=MCTSConfig(threads=32), weights=None)   # default-v1 weights
+r = eng.search(time_s=10, threads=32)        # or sims=...; stop=callable; eng.stop() from any thread
+r["best"], r["moves"][0]                     # {"coord", "n", "q" (winrate), "prior", "pv", ...}
+eng.advance(r["best_move"]); eng.advance(opponent_reply)   # the new root keeps its subtree
+eng.save(run_dir / "tree.npz"); eng = MCTS.load(run_dir / "tree.npz")   # resume mid-game
+```
+
+| part | design |
+|---|---|
+| board | C. A bordered array with stride size+2, any size up to 19. Captures, simple ko and suicide follow `gotree.position` exactly (tested on random games of size 5 to 19: legal-move sets, captures, ko point, eyes, final area score). Zobrist hash of the stones (fixed seed, so keys are stable across runs and files); the node key adds side to move, ko point and passes. Tromp-Taylor area score with komi. |
+| features | One spec for playouts and priors: a colour-relative 3x3 pattern (1107 canonical) plus 41 tactical features. Layout and the hand-written default weights are in `mcts/FEATURES.md`; `features(position, move)` and `move_logits(position, weights)` in `mcts.features`. |
+| playouts | C. Softmax over the legal non-eye moves of `exp(sum of weights / T)`, pass only when no such move exists, simple ko, at most 3·size² moves. The value is win/loss (±1) by Tromp-Taylor score. Own eyes are never filled. |
+| tree | Struct-of-arrays in numpy (`mcts/tree.py`). Nodes are keyed by Zobrist key through a transposition table, so transpositions share N/W. Edges carry the move, the prior (learned, and merged with external priors), visits N and the child index. Selection is PUCT `Q + c_puct·P·√N/(1+n)` with virtual loss and FPU (parent Q − `fpu`). Progressive widening admits `k0 + c·N^α` children in prior order (the root, and nodes with external priors, admit all). A leaf is expanded once it has `expand_visits` visits. Leaf value: a playout z, plus the node's external value if it has one; Q at a node is `(1−lam)·Q_ext + lam·Q_playout` (just Q_playout without external values). Backup flips the sign at each ply. Positional superko applies to tree moves over the game history plus the path. |
+| threads | `search(time_s, sims, threads)` runs N Python threads, each inside one C call with the GIL released. Selection reads the statistics with relaxed atomics; virtual loss and backup are atomic adds; one compare-and-swap claims an expansion. Only the transposition-table lookup/insert of a new leaf (~0.1 µs) and the event queue take a mutex. Stop conditions: time, simulation count (exact: N totals equal the simulations run), `stop()` callable, `eng.stop()`, optional early stop. |
+| reuse | One tree per game, never reset. `advance(move)` moves the root to the child (creating it if needed); the subtree keeps every statistic, and the old root becomes history for superko. `set_root(board, history)` jumps anywhere while keeping the tree. |
+| eviction | Caps: `max_nodes` (default 20M) and `max_edges` (default 48 per node). Arrays are allocated lazily, so only used pages cost memory: about 0.4 KB per node on 9x9 (a 1 s/move self-play game ended with 8.6M nodes and a 3.1 GB tree file). When a cap is hit, the search pauses, evicts the least-visited nodes outside the root's subtree down to `gc_low_water` (80%), compacts the arrays and continues. The root's subtree is never evicted; if it alone fills 90% of a cap the tree is frozen (new leaves are evaluated but not stored) until `advance`. |
+| persistence | `save(path)` writes the arrays, root, history, moves, config and weights atomically as `.npz`; `MCTS.load(path)` rebuilds the transposition table and resumes. A save writes every node, so it costs seconds for millions of nodes (`selfplay --save-tree` and the arena player save after every move). The CLI refuses run dirs inside the Chandra tree. |
+
+**Hooks for M7 / M8** (docstrings in `mcts/tree.py`):
+- `on_expand(event)` runs on the search's control thread for each node that reaches `n_thr`
+  visits (default 64), and for every node within `hook_depth` (default 1) of the root. The event
+  carries `key`, `board` / `position`, `depth`, `n` and `path`. The hook only queues work; the
+  search never waits for it.
+- `set_external(node_key, priors={move: p}, value=winrate, source=...)` may be called from any
+  thread, also during a search. It merges the priors as `(1−beta)·learned + beta·external`, in
+  place. It stores `v_ext` and backs it up once through the node's recorded path. A node that is
+  not in the tree stays pending until it is.
+- `learner.observe(position, visit_distribution, q, depth)` (or a plain callable) runs after
+  every search for each well-visited node (`observe_min_visits`) of the root's subtree, breadth
+  first.
+- `weights=` takes `Weights`, a path, or any provider with `get()`. The engine asks the provider
+  at every search start and uses a new version without a restart. `params.lam/beta/temperatures`
+  in the weight file override the config.
+
+**Measured** (`python3 -m mcts bench --threads 1,8,16,32 --time 5`, host anta, 2026-10-07, other
+users' load 25 to 27 of 144 threads). The midgame is a 30-move 9x9 position written by hand
+(`mcts.cli.MIDGAME_9`).
+
+| position | threads | sims/s | time in playouts | in expansions |
+|---|---|---|---|---|
+| empty 9x9 | 1 | 2213 | 97% | 2% |
+| empty 9x9 | 8 | 21337 | 96% | 2% |
+| empty 9x9 | 16 | 43390 | 96% | 2% |
+| empty 9x9 | 32 | 85026 | 95% | 2% |
+| midgame | 1 | 5496 | 94% | 4% |
+| midgame | 8 | 39010 | 91% | 4% |
+| midgame | 16 | 73016 | 91% | 4% |
+| midgame | 32 | 142074 | 88% | 4% |
+
+The first version held one tree mutex during descent and backup. It capped descents at about 35k/s
+and fell to 41k sims/s at 32 threads in the midgame, below the 59k at 16 threads. A run with
+4 playouts per leaf confirmed the cause: playouts/s rose 4x while descents stayed flat. The
+lock-free hot loop above removed that cap; nearly all time is now in the playouts themselves.
+
+For comparison, a tree in Python objects with C playouts reached 1.9k sims/s on 1 thread and
+2.5k on 8 (GIL-bound, falling at 16); that is why the hot loop is in C.
+
+Code-only sanity checks on 9x9, 8 threads, 8 games each with colours alternating: MCTS at
+0.2 s/move beat the greedy policy player (argmax of the default priors) 8-0; MCTS at 0.4 s/move
+beat MCTS at 0.05 s/move 8-0.
+
+Tests: `python3 -m pytest -q tests/test_mcts_*.py -p no:cacheprovider` (about 30 s). They cover:
+- rules vs gotree, Zobrist keys and transpositions, and a build from an empty build dir;
+- features (deterministic, symmetric, logits = sums of weights) and tactical features;
+- playouts never fill own eyes and end with every empty region bordered by one colour;
+- MCTS takes a 4-stone capture, saves a group in atari and avoids a 7-stone self-atari;
+- thread safety: N totals equal the simulations, no virtual loss left over, child keys match their moves;
+- `advance` and compaction keep the subtree's N/W exactly; the eviction order; save/load;
+- superko in the tree; hooks and external results (also during a search); learner samples; the weights provider;
+- stop conditions, the CLI, and an arena game against `random` with one tree per game.
+
+Not done here: RAVE/AMAF (not implemented, so not measured). Incremental playout feature updates:
+the playouts are 88-97% of the time, so this is the next speed-up. Ladder features inside playouts
+are optional and off by default (−30% playout speed). Visit counters are int32 (2^31 visits through
+one node, about 4 h at 140k sims/s). The tree's terminal score is Tromp-Taylor without dead-stone
+removal, so the engine captures dead stones before it passes.

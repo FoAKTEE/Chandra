@@ -14,3 +14,5 @@ __pycache__/
 *.log
 # kgservice rendezvous files (contain per-backend secrets).
 engines/run/
+# MCTS v2 C core: compiled on first import / `python3 -m mcts build`, from mcts/csrc/.
+mcts/.build/

@@ -100,6 +100,19 @@ class TreeAdapter(Adapter):
         return cmd + self.a.extra
 
 
+class MCTSAdapter(Adapter):
+    """MCTS v2 (`python3 -m mcts play`): one reusable tree per game, simulations in code, asynchronous
+    LLM expansion with --tree-worker sessions (`-- --llm off` for the code-only ablation).  The run
+    state (tree checkpoints, DAG, memory, job dirs) lives in <workspace>/mcts, so a relaunch resumes
+    the game from the last saved tree.  Extra args after -- go to `mcts play`."""
+    name = "mcts"
+
+    def command(self, ws, first, session_id):
+        cmd = [sys.executable, "-m", "mcts", "play", "--run", str(ws / "mcts"), "--arena", self.a.arena,
+               "--opponent", self.a.tree_opponent, "--games", str(self.a.games), "--worker", self.a.tree_worker]
+        return cmd + self.a.extra
+
+
 class CommandAdapter(Adapter):
     """Any other CLI agent (Gemini CLI, OpenHands, Aider, an in-house agent ...).
     --cmd is a template; placeholders: {prompt} {model} {reasoning} {workspace}
@@ -117,7 +130,8 @@ class CommandAdapter(Adapter):
         return [part.format(**vals) for part in shlex.split(tpl)] + self.a.extra
 
 
-ADAPTERS = {c.name: c for c in (ClaudeCodeAdapter, CodexAdapter, DojoAdapter, TreeAdapter, CommandAdapter)}
+ADAPTERS = {c.name: c for c in (ClaudeCodeAdapter, CodexAdapter, DojoAdapter, TreeAdapter, MCTSAdapter,
+                                CommandAdapter)}
 
 
 # ---------------------------------------------------------------- runner
@@ -178,8 +192,8 @@ def main(argv=None):
     p.add_argument("--wrap", default="", help="prefix command, e.g. a docker run line; {workspace} is substituted")
     p.add_argument("--claude-bin", default="claude")
     p.add_argument("--codex-bin", default="codex")
-    p.add_argument("--tree-worker", default="mock", help="--harness tree: worker spec, e.g. claude:opus:high")
-    p.add_argument("--tree-opponent", default="lv3", help="--harness tree: opponent tier to play")
+    p.add_argument("--tree-worker", default="mock", help="--harness tree / mcts: worker spec, e.g. claude:opus:high")
+    p.add_argument("--tree-opponent", default="lv3", help="--harness tree / mcts: opponent tier to play")
     p.add_argument("--cmd", default="", help="--harness cmd: command template, e.g. \"gemini -p {prompt} -m {model} --yolo\"")
     p.add_argument("--cmd-resume", default="", help="--harness cmd: template for relaunches with {session_id}")
     p.add_argument("extra", nargs=argparse.REMAINDER, help="after --, extra args for the harness command")
@@ -239,7 +253,7 @@ def main(argv=None):
         print(f"session {n}: {' '.join(shlex.quote(c) for c in cmd)[:300]}", flush=True)
         t0 = time.time()
         with open(log_out, "w") as fo, open(log_err, "w") as fe:
-            proc = subprocess.Popen(cmd, cwd=ws if a.harness not in ("dojo", "tree") else REPO, env=env, stdout=fo, stderr=fe,
+            proc = subprocess.Popen(cmd, cwd=ws if a.harness not in ("dojo", "tree", "mcts") else REPO, env=env, stdout=fo, stderr=fe,
                                     stdin=subprocess.DEVNULL)
             try:
                 rc = proc.wait(timeout=a.session_timeout)

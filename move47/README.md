@@ -261,3 +261,100 @@ the playouts are 88-97% of the time, so this is the next speed-up. Ladder featur
 are optional and off by default (−30% playout speed). Visit counters are int32 (2^31 visits through
 one node, about 4 h at 140k sims/s). The tree's terminal score is Tromp-Taylor without dead-stone
 removal, so the engine captures dead stones before it passes.
+
+## MCTS v2 with asynchronous LLM expansion (`mcts/llm.py`, `mcts/play.py`)
+
+MISSION.md section 5, node `move47::mcts-llm`. The code search of `mcts/` runs all simulations;
+Opus 5.5 sessions evaluate selected nodes in the background and their priors and values enter the
+tree through `set_external` while it is being searched. gotree's v1 code is reused unchanged: the
+workers (`CLIWorker` with the clean flags and `bin/worker-sandbox`), the job kinds and prompts
+(`expand`, `more` with a region, `refute`, `abstract`), validation, the DAG (L0) and the lesson
+memory (L1/L2), the arena helpers (`current_board`, `play_decision`) and `_cli_usage`.
+
+```bash
+# a game (token from $GOARENA_TOKEN); --llm off = code-only ablation, --learn = mcts.hl.OnlineLearner
+python3 -m mcts play --arena http://127.0.0.1:8765 --opponent k1-full --games 1 --run <dir outside Chandra> \
+    --worker claude:claude-opus-5-5:xhigh --wrap "$PWD/bin/worker-sandbox {jobdir}" \
+    --time-per-move 1800 --threads 32 --llm-workers 16 [--learn] [--llm off]
+# the same through the campaign runner (workspaces, relaunch, logs); args after -- go to `mcts play`
+GOARENA_ADMIN_TOKEN=$(cat <arena dir>/admin.token) python3 -m harness.runner --harness mcts \
+    --tree-worker claude:claude-opus-5-5:xhigh --tree-opponent k1-full --games 1 --run-dir <dir> \
+    -- --time-per-move 1800 --wrap "$PWD/bin/worker-sandbox {jobdir}"
+# one position: code-only warm-up, then search with the LLM service; root tables over time
+python3 -m mcts llm-search --sgf game.sgf --upto 22 --run <dir> --worker claude:claude-opus-5-5:xhigh \
+    --wrap "$PWD/bin/worker-sandbox {jobdir}" --time 420 --warmup 30 --llm-workers 8 --max-llm-jobs 16
+```
+
+Main options of `play`: `--n-thr` (default 100000: visits at which a node is queued; the root and
+its children always are), `--llm-workers` (W, default 16), `--max-llm-jobs` (session cap, default
+none), `--job-timeout` (900 s), `--save-every` (tree checkpoint every N decisions, default 5),
+`--dag` / `--memory` (share them between runs to reuse evaluations and lessons), `--set KEY=VALUE`
+(MCTSConfig), `--llm-set KEY=VALUE` (LLMConfig), `--max-load-frac` (0.7: the search threads are
+capped so that host load plus threads stays under 70% of the hardware threads), `--drain` (wait for
+sessions in flight at exit).
+
+| part | design |
+|---|---|
+| hook | `on_expand` only appends the event to an inbox (O(1)); it fires when a node reaches `n_thr` visits and for every node within `hook_depth` (1) of the root. |
+| triage | One dispatcher thread. Each node's canonical position gives its DAG key and the symmetry `s` (canonical = real.transformed(s)). One request per (kind, DAG key): engine nodes with the same canonical position (symmetric moves, transpositions) follow the first request and all receive its result. A node whose DAG key already has an LLM evaluation is served from the DAG at once, without a session (also across moves, games and runs that share the DAG). |
+| queue | Priority classes: the root's expand; root breadth (scouts, refute) and lessons; the root's children; deeper nodes. Within a class, by the node's current visits (read when a slot frees). Non-root requests wait `dispatch_delay_s` (2 s) after a new root so that the code search ranks the children first. Cap `queue_cap` (256): the lowest priority is dropped. After `advance`, requests whose recorded path does not pass through the new root are dropped. |
+| jobs | Built like v1 `_make_job`: position card of the canonical position, memory briefing, `known` for more/refute. Root expand k=10 candidates + u=4 unconventional, other nodes 6 + 1. Root breadth at every new root: v1 `regions()` scouts (v1 defines none below 13x13, so none on 9x9), a refute of the most-visited root move after `refute_after_s` (60 s), and an `abstract` job after each decision. |
+| results | Written to the DAG exactly as v1 writes them (edges with prior and source; unconventional at prior 0.03; scouts mass-scaled; refute at least 0.15; `set_static` value). The engine receives the union of all LLM edges of the DAG key, mapped back with `inv[s]` to the real frame, plus the job's value: `set_external(key, priors, value, source="llm", position=board)`. At the root, unconventional and scout moves get at least `root_explore_prior` (0.05), in place of v1's minimum root visits. A supplied learner gets `observe_external(position, source, priors, value)` for every applied evaluation. |
+| failures | Classified from the JobResult and the job's `session.jsonl` / `session.err` (error results, API-retry events, "API Error" texts only, never the model's own text): rate limit (429, usage limit, with its reset time), overload (529/503), timeout, invalid answer, no answer, exception. Rate limits and overload, and 3 other failures in a row, pause dispatching for 30 s doubling to 30 min (or until a usage-limit reset, at most 6 h) and halve the sessions in flight (floor 1); every 2 successes add one back. A request gets at most 2 sessions after ordinary failures and 6 after rate limits. The search never waits and nothing raises into it. |
+| accounting | `<run>/llm-jobs.jsonl`: one line per session (kind, DAG key, failure class, seconds, tokens and cost from `_cli_usage`, priors applied). Each move record carries the service's counters since the previous move. |
+
+**Play loop.** One tree per game: after our move and the reply the engine advances twice and
+`new_root()` re-ranks the queue; a move list that does not continue the tree's jumps with
+`set_root` (still keeping the tree). Decision: most visits. Board fetches and submissions use
+gotree's resilient helpers (engine outages, resync, transport errors). `<run>/moves.jsonl` per
+decision: game, ply, move, sync (`new` / `advanced` / `set_root` / `resumed+...`), sims, sims/s,
+nodes, root visits at the start of the search (`root_n_start`: what the reused subtree brought),
+root winrate, stop reason, weights version, the root table (visits, winrate, merged prior, learned
+prior, LLM prior, PV), whether the root has an LLM evaluation, the LLM counters of the move and the
+running cost, wall seconds and save seconds. The tree is saved to `game<N>-tree.npz` (+ a `.json`
+with the arena moves it follows) every `--save-every` decisions; a restarted process (e.g. a runner
+relaunch) loads it and advances it to the arena's position. `--learn` builds
+`mcts.hl.OnlineLearner` (exits with a message if the module is missing), passes its `provider` as
+the weights and itself as the engine's learner, calls `update()` after each decision and
+`observe_game(result, our_color)` after each game.
+
+Run dir: `config.json`, `log.txt`, `moves.jsonl`, `llm-jobs.jsonl`, `dag.db`, `memory.db`,
+`jobs/<id>-<kind>-<tag>/` (one per session), `bin/gtree`, `game<N>-tree.{npz,json}`.
+
+**Smoke runs** (2026-10-07, run dirs in `/data/haiyangw/claude/Move47/runs/move47/mcts-llm-20261007/`, launch
+scripts `smoke-a.sh`, `smoke-b.sh` there):
+
+- (a) GPU arena (`scripts/arena_up.sh`), `harness.runner --harness mcts --tree-worker mock --tree-opponent k1-p
+  -- --time-per-move 3 --threads 16 --llm-workers 4 --n-thr 20000`: one game, 19 decisions, lost (adjudicated at
+  ply 38; arena review 4.66 points lost per move). Every move after the first was `advanced` with the reused root
+  holding visits (18 of 18); median 157k simulations per move (52k/s); 2.85M nodes at the end; tree saves after
+  5, 10, 15 decisions took 0.7, 6.0, 8.8 s. Mock worker: 773 sessions, 0 failed, 826 results applied (748 during a
+  search), 226 requests dropped as stale after advance. The same game setup with `--llm off`: 19 decisions, lost
+  at ply 38 (2.08 points per move). The mock worker's values are heuristics, so these two games compare plumbing,
+  not strength.
+- (b) `llm-search` with sandboxed `claude:claude-opus-5-5:xhigh` on the pilot game after 22 plies (Black to play;
+  canonical symmetry 2, so every job was posed in a flipped frame): 30 s code-only warm-up, then 420 s at 16 threads
+  with W=8 and at most 16 sessions. 231 events, 16 sessions, 16 accepted, 0 failed, all 16 applied during the search;
+  4.08 USD (median 0.235 USD and 82 s per session, 36-261 s). Root evaluation after 129 s: E7 0.60, E6 0.28, others
+  at most 0.04, Black winrate 0.10. The refute of the search's top move H7 (queued after 30 s) answered with the
+  capture at E7 (White 0.88); H7's Q fell from 0.355 to 0.237 and it received no further visits. Root table
+  before / after: H7 1.25M visits, q 0.368 (2.2M simulations) / J3 8.8M visits, q 0.341, H7 7.3M, 0.245, D1 4.8M,
+  0.331, root q 0.247 (27.9M simulations).
+
+Known limits: v1's minimum root visits and root prior noise need a change in the engine's root selection
+(`mcts/tree.py`); here a prior floor for unconventional and scout moves stands in. In smoke (b) the most-visited
+move at the end (J3) had no LLM evaluation of its own: the LLM's values were far below the playouts' (White
+0.68-0.95 after every evaluated Black move), so each evaluation lowered that move's Q with `lam` = 0.5, and the
+session cap left 216 requests queued (E7's own child among them). A decision rule or a calibrated `lam` (M7)
+must handle unevaluated root moves. Requests dropped by the queue cap or as stale are not asked again in the same
+tree (the engine fires a node's hook once). Staleness after `advance` is judged from the event's recorded path, so
+a node reachable from the new root only by another move order is dropped too.
+
+Tests (no model): `python3 -m pytest -q tests/test_mcts_llm.py tests/test_mcts_llm_play.py -p no:cacheprovider`
+(about 20 s): frame mapping for a position with canonical symmetry 2, events from a search turning into jobs
+applied during the search, the DAG cache in another orientation (no session), symmetric nodes sharing one job,
+duplicate events, stale requests dropped after `advance`, rate limit / overload / exception with backoff, W
+halved and raised again, failure classes from session logs, refute and lessons, job and queue caps; the play loop
+against a fake arena (the new root keeps its exact visit count, per-move records, learner calls), resume after a
+crash from the saved tree, the code-only ablation, `--learn` without and with `mcts.hl`, the runner's `mcts`
+adapter command and a full runner game against `random` with the mock worker.

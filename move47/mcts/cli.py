@@ -1,4 +1,4 @@
-"""Command line: python3 -m mcts {build,bestmove,selfplay,bench,weights,arena} (run from move47/)."""
+"""Command line: python3 -m mcts {build,bestmove,selfplay,bench,weights,arena,play,llm-search} (run from move47/)."""
 from __future__ import annotations
 
 import argparse
@@ -143,6 +143,12 @@ def cmd_arena(a) -> int:
     return 0
 
 
+def _register_llm(sub) -> None:
+    """`play` and `llm-search`: MCTS v2 with asynchronous LLM expansion (mcts/play.py, mcts/llm.py)."""
+    from .play import add_parsers
+    add_parsers(sub)
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="python3 -m mcts", description=__doc__)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -197,6 +203,8 @@ def main(argv=None) -> int:
     p.add_argument("--run-dir", default=None)
     common(p)
     p.set_defaults(fn=cmd_arena)
+
+    _register_llm(sub)
 
     a = ap.parse_args(argv)
     return a.fn(a)

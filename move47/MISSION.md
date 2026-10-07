@@ -130,8 +130,10 @@ simulations from LLM calls, as AlphaGo did with its policy network.
 | `move47::mcts-engine` | M6 | import | compiled fast board, features and weighted playouts; Python tree with PUCT, widening, transpositions, reuse, virtual loss and threads; mock LLM hook; tests (rules agree with gotree.position, tactics, reuse keeps statistics); measured simulations per second on 9x9 |
 | `move47::mcts-hl` | M7 | mcts-engine | online learning of policy, value, `lam`, `beta`; versioned weight store; regression set; tests show learned weights predict held-out search targets better than the initial ones |
 | `move47::mcts-llm` | M8 | mcts-engine, worker-sandbox | async expansion queue with sandboxed Opus xhigh workers, prior and value blending, rate-limit backoff, arena play loop that keeps the tree; mock tests and a small real smoke |
-| `move47::mcts-strength` | M9 | mcts-llm, mcts-hl, arena-gpu | code-only and hybrid MCTS against k1-p and the calibrated ladder; time and cost per move |
+| `move47::mcts-calib` | M8b | mcts-llm, mcts-hl | root breadth in the engine (minimum visits for model-proposed and unconventional root moves, prior noise), re-armable expansion hooks, a root-subtree query; root moves without a model value no longer win by default (stand-in value from the parent's evaluation, and the decision only on an evaluated move); model values calibrated to the playout scale online; an Opus smoke on the integration-smoke position decides on an evaluated move |
+| `move47::mcts-strength` | M9 | mcts-calib, arena-gpu | code-only and hybrid MCTS against k1-p and the calibrated ladder; time and cost per move |
 | `move47::mcts-game` | M10 | mcts-strength | one full 9x9 game against k1-full with no cost cap, tree and weights carried across moves; report and review like the pilot |
 
-Waves: **W4** mcts-engine with the ledger update · **W5** mcts-hl and mcts-llm · **W6**
-mcts-strength · **W7** mcts-game.
+Waves: **W4** mcts-engine with the ledger update · **W5** mcts-hl and mcts-llm · **W5b** mcts-calib
+(added 2026-10-07: the mcts-llm smoke chose a move with no model evaluation, because model values sat
+below the playouts) · **W6** mcts-strength · **W7** mcts-game.

@@ -22,6 +22,7 @@ import threading
 import time
 from typing import Iterable, Optional
 
+from .dag import enable_wal
 from .position import EMPTY, Position, coord, point
 
 SCHEMA = """
@@ -94,7 +95,7 @@ class Memory:
         self.db.row_factory = sqlite3.Row
         self.lock = threading.RLock()
         if not readonly:
-            self.db.execute("PRAGMA journal_mode=WAL")
+            enable_wal(self.db)
             self.db.executescript(SCHEMA)
 
     def q(self, sql: str, args: tuple = ()) -> list[dict]:

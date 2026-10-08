@@ -309,3 +309,26 @@ def test_judge_rebuilds_ko_for_katago():
     before, mv = _ko_setup(p)
     after = before.play(mv)
     assert after.cells == p.cells and after.ko == p.ko
+
+
+def test_dag_and_memory_open_a_new_file_from_threads_at_once(tmp_path):
+    # Switching a new file to WAL is not covered by the busy timeout: two streams opening the shared
+    # dag.db / memory.db at once used to fail with 'database is locked' (about 1 in 40 pairs).
+    errors = []
+    for i in range(150):
+        for cls, name in ((DAG, f"d{i}.db"), (Memory, f"m{i}.db")):
+            gate = threading.Barrier(3)
+
+            def open_it():
+                gate.wait()
+                try:
+                    cls(str(tmp_path / name)).db.close()
+                except Exception as e:  # noqa: BLE001 - collected and asserted below
+                    errors.append(repr(e))
+
+            ts = [threading.Thread(target=open_it) for _ in range(3)]
+            for t in ts:
+                t.start()
+            for t in ts:
+                t.join()
+    assert errors == []

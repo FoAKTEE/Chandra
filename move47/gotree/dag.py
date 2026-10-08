@@ -113,6 +113,23 @@ class Edge:
     why: str
 
 
+def enable_wal(db: sqlite3.Connection, timeout_s: float = 30.0) -> None:
+    """PRAGMA journal_mode=WAL, retried until timeout_s: switching a new file to WAL takes a lock for which
+    SQLite does not call the busy handler, so connections opening the same new file at once (one per game
+    stream) can get 'database is locked' at once instead of waiting."""
+    deadline, delay = time.monotonic() + timeout_s, 0.01
+    while True:
+        try:
+            db.execute("PRAGMA journal_mode=WAL")
+            return
+        except sqlite3.OperationalError as e:
+            msg = str(e)
+            if ("locked" not in msg and "busy" not in msg) or time.monotonic() >= deadline:
+                raise
+            time.sleep(delay)
+            delay = min(2 * delay, 0.5)
+
+
 class DAG:
     def __init__(self, path: str, readonly: bool = False):
         self.path = path
@@ -121,7 +138,7 @@ class DAG:
         self.db.row_factory = sqlite3.Row
         self.lock = threading.RLock()
         if not readonly:
-            self.db.execute("PRAGMA journal_mode=WAL")
+            enable_wal(self.db)
             self.db.execute("PRAGMA synchronous=NORMAL")
             self.db.executescript(SCHEMA)
         self._pos_cache: dict[str, Position] = {}

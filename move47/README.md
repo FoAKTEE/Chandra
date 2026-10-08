@@ -797,3 +797,9 @@ in-process arenas share learner, DAG and memory; labels and per-stream session l
 `control.json` before a new game; the budget sum; arena hold / resume), `tests/test_mcts_llm_play.py` (the wait
 for the model with the hold, `should_stop`, labels incl. the first decision of a game),
 `tests/test_arena_profiles.py` (`MOVE_TIMEOUT`).
+
+Result, run `mcts-strength-20261007` (bundle `results/move47/paper_move47/evidence/mcts-strength-20261007/`):
+6 games at 300 s/move, 1-5. vs lv7 1-1 (the win W+2.5 on the score, 0.20 points lost per move), vs lv8 0-2,
+vs k1-p 0-2 (1.45 points lost per move by the kata1 reviewer). Pooled ladder Elo 1801 (95% CI 1466-2136) against
+the code-only ablation's 1596 (1320-1872): the intervals overlap. 1986 model sessions, 873.55 USD (7.16 per
+move); 0 decisions without model input; the book grew from 10 to 36 rules, weights hl-v065 -> hl-v202.

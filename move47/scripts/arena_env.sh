@@ -6,8 +6,10 @@
 #   ladder  the calibrated ladder (lv1-lv8 rated): net g170e-b10c128, config/tiers-9x9.json, port 8766,
 #           arena dir runs/move47/arena-ladder
 # Each setting can still be overridden by its environment variable, which wins over the profile:
-#   ARENA_DIR MODEL CONFIG TIERS HOST PORT REFEREE_VISITS REVIEW_VISITS ADJUDICATE
+#   ARENA_DIR MODEL CONFIG TIERS HOST PORT REFEREE_VISITS REVIEW_VISITS ADJUDICATE MOVE_TIMEOUT
 # ADJUDICATE holds the goarena adjudication options; ADJUDICATE="" turns adjudication off.
+# MOVE_TIMEOUT (default 3600 s): agent inactivity that forfeits a game; longer than any wait of the
+# agent for its model (mcts play --wait-for-model, hours).
 # Both arenas can run at once: each has its own port, arena dir (pid files, tokens, db, logs) and
 # keepalive, and each keepalive keeps one backend of its own model (Slurm: 2 GPUs, so one per model).
 
@@ -49,6 +51,7 @@ arena_args() {
   PORT=${PORT:-$P_PORT}
   REFEREE_VISITS=${REFEREE_VISITS:-1600}
   REVIEW_VISITS=${REVIEW_VISITS:-1600}
+  MOVE_TIMEOUT=${MOVE_TIMEOUT:-3600}
   local adj="--adjudicate-winrate 0.01 --adjudicate-lead 20 --adjudicate-moves 4 --adjudicate-after 30"
   ADJUDICATE=${ADJUDICATE-$adj}
   read -r -a ADJ_ARGS <<<"$ADJUDICATE"
@@ -56,7 +59,7 @@ arena_args() {
 
 arena_show() {
   echo "profile $ARENA_PROFILE: arena dir $ARENA_DIR; model $MODEL; tiers $TIERS; config $CONFIG;" \
-       "http://$HOST:$PORT; referee $REFEREE_VISITS / review $REVIEW_VISITS visits;" \
+       "http://$HOST:$PORT; referee $REFEREE_VISITS / review $REVIEW_VISITS visits; move timeout ${MOVE_TIMEOUT}s;" \
        "adjudication ${ADJUDICATE:-off}"
 }
 

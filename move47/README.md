@@ -88,7 +88,9 @@ Ladder `config/tiers-9x9-kata1.json` (all `counts_for_rating: false`; the k1 tie
 | `k1-p` | 1 visit, temperature 0: argmax of the raw policy over legal non-eye-filling moves; `root_symmetries: 8` averages the root evaluation over all 8 symmetries, so the move is a fixed function of the position (with one random symmetry per backend, `nnRandomize`, it was not) |
 | `k1-64`, `k1-full` | 64 / 1600 visits, temperature 0: KataGo's best move |
 
-Server settings in `arena_up.sh`: `--move-timeout 3600`; `--referee-visits 1600` (one ownership
+Server settings in `arena_up.sh`: `--move-timeout 3600` (`MOVE_TIMEOUT`: seconds of agent inactivity before a
+game is forfeited; raise it above any wait of the agent for its model, e.g. `MOVE_TIMEOUT=25200` with
+`mcts play --wait-for-model 6`); `--referee-visits 1600` (one ownership
 search per finished game, ~1 s on the A100); `--review-visits 1600` (per position at priority -10,
 so an opponent query waits for at most one review position: a 38-ply game is reviewed in ~30 s, and
 k1-full replies took 0.9 s median idle, 1.0-1.7 s median / 3.0 s max under a continuous review backlog);
@@ -304,7 +306,9 @@ none), `--job-timeout` (900 s), `--save-every` (tree checkpoint every N decision
 `--dag` / `--memory` (share them between runs to reuse evaluations and lessons), `--set KEY=VALUE`
 (MCTSConfig), `--llm-set KEY=VALUE` (LLMConfig), `--max-load-frac` (0.7: the search threads are
 capped so that host load plus threads stays under 70% of the hardware threads), `--drain` (wait for
-sessions in flight at exit).
+sessions in flight at exit), `--wait-for-model` (6 h: before each decision, wait while the service is paused
+for a rate / usage limit, so no search of a game with the model on starts without it; each move record has
+`model_input`, `waited_for_model_s` and its decision `label`).
 
 | part | design |
 |---|---|
@@ -767,3 +771,29 @@ Not done here:
 - [FUTURE] Rules only in the tree prior: a rule feature in playouts, retiring rules whose weight stays near 0, and
   sharing one learning state between concurrent runs beyond the version commit (each process fits on its own
   samples).
+
+## Full-system strength (node `move47::mcts-strength`)
+
+MISSION.md section 5, node `move47::mcts-strength` (M9): the full system (model reasoning + MCTS + heuristic
+learning) in rated and strong arena games, against the code-only ablation and v1. Every game is what
+`mcts play --learn --heuristics` plays with the model on.
+
+```bash
+MOVE_TIMEOUT=25200 scripts/arena_up.sh --profile ladder; MOVE_TIMEOUT=25200 scripts/arena_up.sh --profile kata1
+python3 scripts/strength_play.py --run <dir outside Chandra> --plan plan.json [--dry-run]
+python3 scripts/strength_report.py <run> [--out-dir DIR] [--path-root DIR] [--format md|json]
+```
+
+| part | what |
+|---|---|
+| driver `scripts/strength_play.py` | parallel game streams (threads), each a list of segments (one arena run per opponent); one `OnlineLearner` (`<run>/hl`, hybrid mode, `update()` serialised; heuristic gates serialised by its fit lock), one DAG and one lesson memory for all streams; per stream its own model service (W sessions) and heuristic loop; decision labels `<stream><segment>g<game>p<ply>` (`Player(label_prefix=)`), so book provenance and session costs stay per game |
+| model waits | `play_games(wait_for_model_s=)` (`mcts play --wait-for-model`, 6 h): before each decision the game waits while the service is paused for a usage limit; with more than `hold_after_s` (600 s) of pause left the driver pauses the segment's arena run (`hold`, admin API; the arena counts no idle time while paused) and makes it active again before the search; a run found paused when a segment (re)starts is resumed; `play_decision` retries a move refused with `run_paused` |
+| budget | before every decision and new game: the cost of all sessions in `<run>/*/llm-jobs.jsonl` against `budget.max_cost_usd` minus `stop_margin_usd` (stop; the game stays active), and `game_reserve_usd` (no new game); `<run>/control.json` overrides these or stops the run |
+| teardown | commands run when every stream has ended (done or stopped by the budget): e.g. the report, then `arena_down.sh` for both profiles |
+| report `scripts/strength_report.py` | per opponent W-L, Elo with 95% CI (pooled rated games, `goarena.rating` as in the ablation report), review point loss per move and reviewer, blunders, match rate, search / wall seconds, model sessions and USD per move (sessions attributed to the decision they were requested under), decision rules, decisions without model input, model waits; per game cost and heuristics-book growth (rules and nudges proposed / accepted / rejected, weights first -> last); the code-only ablation and v1 pilot for comparison |
+
+Tests (no GPU, no model): `tests/test_strength_driver.py` (two streams with the mock worker against two
+in-process arenas share learner, DAG and memory; labels and per-stream session logs; the report; a stop from
+`control.json` before a new game; the budget sum; arena hold / resume), `tests/test_mcts_llm_play.py` (the wait
+for the model with the hold, `should_stop`, labels incl. the first decision of a game),
+`tests/test_arena_profiles.py` (`MOVE_TIMEOUT`).

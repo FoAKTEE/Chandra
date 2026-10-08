@@ -329,9 +329,9 @@ class LLMService:
         self._manual_pause = False
         self._wake.set()
 
-    def attach(self, eng) -> None:
+    def attach(self, eng, label: str = "") -> None:
         """Serve this engine (one per game).  Requests of an earlier engine are dropped; results of
-        its sessions still in flight only reach the DAG."""
+        its sessions still in flight only reach the DAG.  `label` names the engine's root (new_root)."""
         with self._eng_lock:
             self.eng = eng
             if eng is not None:
@@ -345,7 +345,7 @@ class LLMService:
                     del self._queue[rid]
             self.root_key = None
         if eng is not None:
-            self.new_root()
+            self.new_root(label=label)
 
     def detach(self) -> None:
         with self._eng_lock:

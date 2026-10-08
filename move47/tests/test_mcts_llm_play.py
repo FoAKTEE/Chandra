@@ -19,7 +19,7 @@ from gotree.position import Position, coord, point
 from gotree.workers import MockWorker
 from harness.arena_client import ArenaClient
 from harness.runner import ADAPTERS
-from mcts.decide import RULES
+from mcts.decide import RULES, DecideConfig
 from mcts.llm import LLMConfig, LLMService
 from mcts.play import Player, make_learner, play_games
 from mcts.tree import MCTSConfig
@@ -209,6 +209,61 @@ def test_a_restarted_process_resumes_the_game_from_the_saved_tree(tmp_path):
     jobs = [json.loads(x) for x in (tmp_path / "llm-jobs.jsonl").read_text().splitlines()]
     expands = [j["dag_key"] for j in jobs if j["kind"] == "expand"]
     assert len(expands) == len(set(expands))
+
+
+def test_play_waits_for_the_model_before_a_decision_and_stops_when_asked(tmp_path):
+    """A usage-limit pause of the model service holds the next decision (at most wait_for_model_s), so no search
+    of a game with the model on runs without it, and a long wait is bracketed by hold(True) / hold(False) (the
+    driver pauses the arena run meanwhile); should_stop ends the loop before a decision or a new game (the
+    budget check of a campaign driver); decision labels carry the player's prefix (streams sharing a learner)."""
+    import time as _t
+    holder, replies, logs = {}, [], []
+    arena = FakeArena(tree_reply(holder, replies), max_plies=10)
+    svc = make_service(tmp_path)
+    player = SettledPlayer(tmp_path, MCTSConfig(max_nodes=300_000, n_thr=400), None, 2, sims=800, service=svc,
+                           save_every=0, log=logs.append, label_prefix="A0",
+                           decide_cfg=DecideConfig(extend_s=0.5))
+    holder["player"] = player
+    calls = []
+
+    def should_stop(new_game):
+        calls.append(new_game)
+        n = len(calls)
+        if n == 2:                       # before move 1: a usage limit holds the service for 90 s
+            svc.paused_until = _t.time() + 90
+        elif n == 3:                     # before move 3: the limit is over
+            svc.paused_until = 0.0
+        return "budget: 2990 of 3000 USD spent" if n == 4 else None
+
+    holds = []
+
+    def hold(on):                        # a driver pauses the arena run while it waits for the model
+        holds.append((on, round(svc.paused_until - _t.time())))
+
+    t0 = _t.time()
+    res = play_games(arena, "fake", 1, player, record=tmp_path / "moves.jsonl", log=logs.append,
+                     sleep=lambda s: None, wait_for_model_s=2.0, should_stop=should_stop, hold=hold, hold_after_s=60)
+    svc.wait_idle(20)
+    svc.close()
+    assert calls == [True, False, False, False]
+    assert [h[0] for h in holds] == [True, False] and holds[0][1] > 60     # only around the long wait (move 1)
+    assert res == [{"game": 1, "stopped": "budget: 2990 of 3000 USD spent"}]
+    rec = records(tmp_path)
+    assert [r["ply"] for r in rec] == [1, 3] and len(arena.moves) == 4 and not arena.over   # the game stays active
+    assert rec[0]["waited_for_model_s"] == pytest.approx(2.0, abs=0.6) and rec[1]["waited_for_model_s"] == 0.0
+    assert _t.time() - t0 >= 1.9 and any("paused for" in x and "waiting before the next decision" in x for x in logs)
+    assert any("stopping before move 5 of game #1" in x for x in logs)
+    assert [r["label"] for r in rec] == ["A0g1p1", "A0g1p3"]
+    assert [r["model_input"] for r in rec] == [False, True]     # the bound ran out: the record says so
+    jobs = [json.loads(x) for x in (tmp_path / "llm-jobs.jsonl").read_text().splitlines()]
+    assert jobs and all(j["root"].startswith("A0g1p") for j in jobs)        # the first decision too
+    assert {j["tag"] for j in jobs if j["kind"] == "abstract"} <= {"A0g1p1", "A0g1p3"}
+    # a stop before a new game: nothing is started
+    arena2 = FakeArena(lambda moves: "pass", max_plies=4)
+    player2 = Player(tmp_path / "b", MCTSConfig(max_nodes=100_000), None, 2, sims=200, save_every=0,
+                     log=lambda m: None)
+    res2 = play_games(arena2, "fake", 1, player2, log=lambda m: None, should_stop=lambda new: "no budget" if new else None)
+    assert res2 == [{"game": None, "stopped": "no budget"}] and not arena2.started
 
 
 def test_code_only_ablation_has_no_llm_fields(tmp_path):

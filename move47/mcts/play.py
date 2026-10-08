@@ -53,17 +53,22 @@ class Player:
 
     def __init__(self, run_dir: Path, config: MCTSConfig, time_s: Optional[float], threads: int,
                  sims: Optional[int] = None, weights=None, learner=None, service=None, save_every: int = 5,
-                 log: Callable[[str], None] = print, decide_cfg: Optional[DecideConfig] = None):
+                 log: Callable[[str], None] = print, decide_cfg: Optional[DecideConfig] = None,
+                 label_prefix: str = ""):
         self.run_dir = Path(run_dir)
         self.cfg, self.time_s, self.threads, self.sims = config, time_s, threads, sims
         self.decide_cfg = decide_cfg or DecideConfig()
         self.weights, self.learner, self.service = weights, learner, service
         self.save_every, self.log = save_every, log
+        self.label_prefix = label_prefix      # decision labels <prefix>g<game>p<ply> (several streams, one learner)
         self.eng: Optional[MCTS] = None
         self.known: list = []                 # arena moves (points) the tree's root has followed
         self.game_no: Optional[int] = None
         self.decisions = 0                    # in this process, this game
         self._last_stats: Optional[dict] = None
+
+    def label(self, ply: int) -> str:
+        return f"{self.label_prefix}g{self.game_no}p{ply}"
 
     # ------------------------------------------------------------ files
     def tree_path(self, game_no: int) -> Path:
@@ -73,10 +78,10 @@ class Player:
         return self.run_dir / f"game{game_no}-tree.json"
 
     # ------------------------------------------------------------ game lifecycle
-    def _attach(self, eng: MCTS) -> None:
+    def _attach(self, eng: MCTS, label: str = "") -> None:
         self.eng = eng
         if self.service is not None:
-            self.service.attach(eng)
+            self.service.attach(eng, label=label)
 
     def close(self) -> None:
         if self.service is not None:
@@ -96,7 +101,7 @@ class Player:
                 if not side.get("finished"):
                     eng = MCTS.load(tp, config=copy.deepcopy(self.cfg), weights=self.weights, learner=self.learner)
                     self.known = list(side["known"])
-                    self._attach(eng)
+                    self._attach(eng, label=self.label(len(self.known) + 1))
                     self.log(f"  resumed the tree of game {game_no}: {eng.n_nodes} nodes, root after "
                              f"{len(self.known)} moves, root visits {int(eng.a.n[eng.root])}")
                     return "resumed"
@@ -109,7 +114,7 @@ class Player:
         b, hist, pts = board_from_arena(resp, komi)
         if self.eng is None:
             self._attach(MCTS(b, history=hist, config=copy.deepcopy(self.cfg), weights=self.weights,
-                              learner=self.learner))
+                              learner=self.learner), label=self.label(len(pts) + 1))
             self.known = pts
             return "new"
         how = "set_root"
@@ -125,7 +130,7 @@ class Player:
             self.eng.set_root(b, hist)
         self.known = pts
         if self.service is not None:
-            self.service.new_root(label=f"g{self.game_no}p{len(pts) + 1}")
+            self.service.new_root(label=self.label(len(pts) + 1))
         return how
 
     def decide(self) -> dict:
@@ -231,7 +236,17 @@ def _status(client, log, sleep, max_wait: float = MAX_WAIT) -> dict:
 
 def play_games(client, opponent: str, games: int, player: Player, color: Optional[str] = None,
                record: Optional[Path] = None, abstract: bool = True, log: Callable[[str], None] = print,
-               sleep: Callable[[float], None] = time.sleep, heuristics=None) -> list[dict]:
+               sleep: Callable[[float], None] = time.sleep, heuristics=None, wait_for_model_s: float = 0.0,
+               should_stop: Optional[Callable[[bool], Optional[str]]] = None,
+               hold: Optional[Callable[[bool], None]] = None, hold_after_s: float = 600.0) -> list[dict]:
+    """Play up to `games` arena games.  wait_for_model_s > 0: before each decision, wait (at most that
+    long) while the model service is paused for a rate / usage limit, so that no search of a game with
+    the model on runs without model input; when that pause has more than hold_after_s left, hold(True)
+    is called before the wait and hold(False) after it (a driver pauses the arena run meanwhile, so the
+    arena's move clock does not run; a move submitted to a paused run is retried by play_decision).
+    should_stop(new_game) -> reason or None is asked before a new game is started (new_game=True) and
+    before each decision; a reason ends the loop at once (the arena game stays active) with a
+    {"game", "stopped": reason} entry in the results."""
     svc, learner = player.service, player.learner
     results = []
     for _ in range(games):
@@ -243,6 +258,11 @@ def play_games(client, opponent: str, games: int, player: Player, color: Optiona
         if st.get("active_game"):
             r = current_board(client, st["active_game"]["game_no"], log, sleep)
         else:
+            why = should_stop(True) if should_stop is not None else None
+            if why:
+                log(f"not starting a new game: {why}")
+                results.append({"game": None, "stopped": why})
+                return results
             r = _call(client.new_game, opponent, color)
             if not r.get("game"):  # e.g. 503 while the opponent's first move (we are White) was pending
                 ag = _call(client.status).get("active_game")
@@ -255,6 +275,21 @@ def play_games(client, opponent: str, games: int, player: Player, color: Optiona
         first = True
         while not r.get("game_over"):
             before = list(r.get("moves") or [])
+            why = should_stop(False) if should_stop is not None else None
+            if why:
+                log(f"stopping before move {len(before) + 1} of game #{game_no}: {why}")
+                results.append({"game": game_no, "stopped": why})
+                return results
+            waited = 0.0
+            if svc is not None and wait_for_model_s > 0:
+                held = hold is not None and svc.paused_until - time.time() > hold_after_s
+                if held:
+                    hold(True)
+                try:
+                    waited = svc.wait_until_available(wait_for_model_s, log)
+                finally:
+                    if held:
+                        hold(False)
             t0 = time.time()
             how = player.sync(r, komi)
             if first and how0 == "resumed":
@@ -271,8 +306,8 @@ def play_games(client, opponent: str, games: int, player: Player, color: Optiona
                 lp = None
             if svc is not None and abstract:
                 svc.request_abstract(summ["moves"], summ["best_move"], summ["q"], summ["root_n"],
-                                     label=f"g{game_no}p{ply}")
-            heur = heuristics.after_decision(player.eng, f"g{game_no}p{ply}") if heuristics is not None else None
+                                     label=player.label(ply))
+            heur = heuristics.after_decision(player.eng, player.label(ply)) if heuristics is not None else None
             rec = {"game": game_no, "ply": ply, "color": "B" if summ["to_play"] == "X" else "W", "move": mv,
                    "decision": summ["decision"], "sync": how, "time_s": round(summ["time_s"], 2), "sims": summ["sims"],
                    "sims_per_s": round(summ["sims_per_s"]), "nodes": summ["nodes"], "root_n": summ["root_n"],
@@ -280,7 +315,12 @@ def play_games(client, opponent: str, games: int, player: Player, color: Optiona
                    "stop_reason": summ["stop_reason"], "gc_rounds": summ["gc_rounds"], "weights": summ["weights"],
                    "root_table": root_table(summ, lp), "llm_root": llm_root, "llm": player.llm_delta()}
             if heur is not None:
-                rec["heuristic"] = {k: heur.get(k) for k in ("requested", "reason", "weights") if k in heur}
+                rec["heuristic"] = {k: heur.get(k) for k in ("requested", "reason", "weights", "label") if k in heur}
+            if svc is not None:
+                ll_ = rec["llm"] or {}
+                rec["label"] = player.label(ply)
+                rec["model_input"] = bool(ll_.get("ok", 0) or ll_.get("applied", 0))
+                rec["waited_for_model_s"] = round(waited, 1)
             ll = rec["llm"]
             log(f"  move {ply}: {mv} [{summ['decision']['rule']}] ({how}) {summ['sims']} sims in {summ['time_s']:.0f}s, "
                 f"root_n {summ['root_n']} "
@@ -489,7 +529,8 @@ def cmd_play(a) -> int:
                     decide_cfg=dcfg)
     try:
         res = play_games(ArenaClient(a.arena, token), a.opponent, a.games, player, a.color,
-                         record=run / "moves.jsonl", abstract=not a.no_abstract, log=log, heuristics=heur)
+                         record=run / "moves.jsonl", abstract=not a.no_abstract, log=log, heuristics=heur,
+                         wait_for_model_s=a.wait_for_model * 3600)
     finally:
         if svc is not None:
             svc.close(wait_s=a.drain)
@@ -876,6 +917,10 @@ def add_parsers(sub) -> None:
     p.add_argument("--learn", action="store_true", help="online learning with mcts.hl.OnlineLearner")
     p.add_argument("--no-abstract", action="store_true", help="no lessons job after each decision")
     p.add_argument("--save-every", type=int, default=5, help="save the tree every N decisions (0 = never)")
+    p.add_argument("--wait-for-model", type=float, default=6.0,
+                   help="hours to wait at most before a decision while the model sessions are paused for a rate / "
+                        "usage limit (0 = do not wait: searches then run without model input); the arena's move "
+                        "timeout must be longer (scripts/arena_up.sh: MOVE_TIMEOUT)")
     _common(p)
     p.set_defaults(fn=cmd_play)
 

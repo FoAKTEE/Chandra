@@ -8,7 +8,8 @@
 #     ladder calibrated ladder: g170e-b10c128 net, config/tiers-9x9.json, port 8766, runs/move47/arena-ladder
 #     --dry-run  print the settings and the two commands; start nothing, create nothing
 # Environment overrides (win over the profile; see scripts/arena_env.sh): ARENA_DIR MODEL CONFIG TIERS
-# HOST PORT REFEREE_VISITS REVIEW_VISITS ADJUDICATE (ADJUDICATE="" = adjudication off).
+# HOST PORT REFEREE_VISITS REVIEW_VISITS ADJUDICATE (ADJUDICATE="" = adjudication off) MOVE_TIMEOUT
+# (seconds of agent inactivity before a game is forfeited, default 3600).
 # Everything lives in $ARENA_DIR (outside the Chandra tree): arena.db, admin.token and viewer.token
 # (mode 600, created once, never tracked or printed), <name>.pid and <name>.log for both processes,
 # kg-client.log (the arena's KataGo client: backend choice, failover, resends).
@@ -37,7 +38,7 @@ done
 KEEPALIVE_CMD=(env PYTHONUNBUFFERED=1 python3 -m kgservice keepalive --model "$MODEL" --config "$CONFIG")
 ARENA_CMD=(python3 -m goarena serve --db "$real_dir/arena.db" --host "$HOST" --port "$PORT"
   --katago-bin "$M47/bin/kg-client" --katago-model "$M47/$MODEL" --katago-config "$M47/$CONFIG"
-  --tiers "$M47/$TIERS" --move-timeout 3600 --referee-visits "$REFEREE_VISITS"
+  --tiers "$M47/$TIERS" --move-timeout "$MOVE_TIMEOUT" --referee-visits "$REFEREE_VISITS"
   --review-visits "$REVIEW_VISITS" "${ADJ_ARGS[@]}")
 if ((DRY_RUN)); then
   arena_show

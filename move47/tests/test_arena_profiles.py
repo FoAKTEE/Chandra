@@ -14,7 +14,7 @@ STRONG = "engines/models/kata1-tf3-b11c768-s11003M-d5973M-7gres.bin.gz"
 SMALL = "engines/models/g170e-b10c128-s1141046784-d204142634.bin.gz"
 ADJ = "--adjudicate-winrate 0.01 --adjudicate-lead 20 --adjudicate-moves 4 --adjudicate-after 30"
 OVERRIDES = ("ARENA_PROFILE", "ARENA_DIR", "MODEL", "CONFIG", "TIERS", "HOST", "PORT", "REFEREE_VISITS",
-             "REVIEW_VISITS", "ADJUDICATE", "RUNS_ROOT")
+             "REVIEW_VISITS", "ADJUDICATE", "RUNS_ROOT", "MOVE_TIMEOUT")
 
 
 def _script(name, *args, **env):
@@ -75,6 +75,19 @@ def test_arena_scripts_environment_overrides_win(tmp_path):
     assert "--port 9001 " in arena and f"--db {tmp_path}/a/arena.db " in arena and "--review-visits 64" in arena
     assert "adjudicate" not in arena and "adjudication off" in p.stdout
     assert not (tmp_path / "a").exists()                           # a dry run creates nothing
+
+
+@needs_files
+def test_arena_move_timeout_can_outlast_a_wait_for_the_model():
+    """MOVE_TIMEOUT sets goarena's --move-timeout (agent inactivity -> forfeit); the default stays 3600 s, and a
+    run whose agent may wait hours for a usage-limit reset (mcts play --wait-for-model) raises it."""
+    for profile in ("kata1", "ladder"):
+        p = _script("arena_up.sh", "--profile", profile, "--dry-run", MOVE_TIMEOUT="25200")
+        assert p.returncode == 0, p.stderr
+        arena = next(l for l in p.stdout.splitlines() if l.startswith("arena: "))
+        assert "--move-timeout 25200 --referee-visits 1600" in arena and "move timeout 25200s" in p.stdout
+        d = _script("arena_up.sh", "--profile", profile, "--dry-run")
+        assert "--move-timeout 3600 " in next(l for l in d.stdout.splitlines() if l.startswith("arena: "))
 
 
 @needs_files

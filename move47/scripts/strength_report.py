@@ -58,12 +58,13 @@ def _sessions(run: Path) -> dict:
     return out
 
 
-def _proposals(hl: Path) -> dict:
-    """game key -> rules / nudges proposed, accepted, rejected (heuristic jobs of this run only)."""
+def _proposals(hl: Path, skip: int = 0) -> dict:
+    """game key -> rules / nudges proposed, accepted, rejected (heuristic jobs of this run only: the first `skip`
+    lines, start-state.json "proposals", came with the copied learning state and may carry the same labels)."""
     out: dict = defaultdict(lambda: {"jobs": 0, "rules_proposed": 0, "rules_accepted": 0, "rules_rejected": 0,
                                      "nudges_proposed": 0, "nudges_accepted": 0, "nudges_rejected": 0,
                                      "accepted_rules": [], "book_versions": []})
-    for p in _jsonl(hl / "proposals.jsonl"):
+    for p in _jsonl(hl / "proposals.jsonl")[skip:]:
         k = _game_key(p.get("label", ""))
         if k is None:
             continue
@@ -121,7 +122,7 @@ def build(run: Path, start_state: Optional[Path] = None, ablation: Optional[Path
     if sp and Path(sp).exists():
         start = json.loads(Path(sp).read_text())
     sess = _sessions(run)
-    props = _proposals(run / "hl")
+    props = _proposals(run / "hl", int(start.get("proposals", 0)))
     segs = []
     for sd in sorted(p for p in run.glob("*/*") if (p / "arena.json").exists()):
         s = segment_data(sd, plan)

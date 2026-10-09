@@ -167,3 +167,20 @@ def test_hold_pauses_the_arena_run_and_a_paused_run_is_resumed_before_play(two_a
     bad = S.arena_hold({"url": arena["url"], "dir": str(tmp_path / "nowhere")}, run_id, logs.append)
     bad(True)                                                          # errors are logged, never raised
     assert "could not set paused" in logs[-1]
+
+
+def test_report_skips_proposals_that_came_with_the_copied_learning_state(tmp_path):
+    sys.path.insert(0, str(ROOT / "scripts"))
+    try:
+        import strength_report as R
+    finally:
+        sys.path.remove(str(ROOT / "scripts"))
+    (tmp_path / "proposals.jsonl").write_text("".join(json.dumps(p) + "\n" for p in (
+        {"label": "A0g1p3", "rules": [{"id": "P1", "status": "accepted"}, {"id": "P2", "status": "rejected"}]},
+        {"label": "A0g1p5", "rules": [{"id": "P3", "status": "rejected"}]},
+        {"label": "A0g1p3", "rules": [{"id": "P9", "status": "accepted"}], "nudges": [{"status": "rejected"}]})))
+    every = R._proposals(tmp_path)[("A", 0, 1)]          # the copied run used the same labels
+    assert (every["jobs"], every["rules_proposed"], every["rules_accepted"]) == (3, 4, 2)
+    mine = R._proposals(tmp_path, skip=2)[("A", 0, 1)]
+    assert (mine["jobs"], mine["rules_proposed"], mine["rules_accepted"], mine["nudges_rejected"]) == (1, 1, 1, 1)
+    assert mine["accepted_rules"] == ["P9"]

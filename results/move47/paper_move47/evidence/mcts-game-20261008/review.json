@@ -1,0 +1,667 @@
+{
+ "summary": {
+  "moves": 19,
+  "avg_loss": 1.836,
+  "blunders": 1,
+  "match_rate": 0.211,
+  "phases": {
+   "opening": {
+    "moves": 8,
+    "avg_loss": 0.964
+   },
+   "middle": {
+    "moves": 11,
+    "avg_loss": 2.47
+   }
+  },
+  "plies": 38
+ },
+ "moves": [
+  {
+   "ply": 1,
+   "color": "B",
+   "move": "E5",
+   "best": "E5",
+   "top3": [
+    "E5",
+    "F5",
+    "D5"
+   ],
+   "matched": true,
+   "loss": 0.1,
+   "raw_loss": 0.1,
+   "wr_loss": 0.0,
+   "lead_before": -1.04,
+   "lead_after": -1.14
+  },
+  {
+   "ply": 2,
+   "color": "W",
+   "move": "C4",
+   "best": "C4",
+   "top3": [
+    "C4",
+    "C6",
+    "G4"
+   ],
+   "matched": true,
+   "loss": 0.0,
+   "raw_loss": -0.02,
+   "wr_loss": 0.0,
+   "lead_before": 1.14,
+   "lead_after": 1.16
+  },
+  {
+   "ply": 3,
+   "color": "B",
+   "move": "C5",
+   "best": "D3",
+   "top3": [
+    "D3",
+    "E3",
+    "D7"
+   ],
+   "matched": false,
+   "loss": 0.2,
+   "raw_loss": 0.2,
+   "wr_loss": 0.0,
+   "lead_before": -1.16,
+   "lead_after": -1.37
+  },
+  {
+   "ply": 4,
+   "color": "W",
+   "move": "B5",
+   "best": "B5",
+   "top3": [
+    "B5",
+    "G6",
+    "D5"
+   ],
+   "matched": true,
+   "loss": 0.0,
+   "raw_loss": -0.11,
+   "wr_loss": 0.0,
+   "lead_before": 1.37,
+   "lead_after": 1.48
+  },
+  {
+   "ply": 5,
+   "color": "B",
+   "move": "C6",
+   "best": "B6",
+   "top3": [
+    "B6",
+    "C6",
+    "B4"
+   ],
+   "matched": false,
+   "loss": 1.15,
+   "raw_loss": 1.15,
+   "wr_loss": 0.0129,
+   "lead_before": -1.48,
+   "lead_after": -2.63
+  },
+  {
+   "ply": 6,
+   "color": "W",
+   "move": "B6",
+   "best": "B6",
+   "top3": [
+    "B6",
+    "G6",
+    "D3"
+   ],
+   "matched": true,
+   "loss": 0.0,
+   "raw_loss": -0.33,
+   "wr_loss": 0.0,
+   "lead_before": 2.63,
+   "lead_after": 2.96
+  },
+  {
+   "ply": 7,
+   "color": "B",
+   "move": "C7",
+   "best": "C7",
+   "top3": [
+    "C7",
+    "G5",
+    "G4"
+   ],
+   "matched": true,
+   "loss": 0.0,
+   "raw_loss": -0.07,
+   "wr_loss": 0.0031,
+   "lead_before": -2.96,
+   "lead_after": -2.88
+  },
+  {
+   "ply": 8,
+   "color": "W",
+   "move": "G6",
+   "best": "G6",
+   "top3": [
+    "G6",
+    "D4",
+    "G5"
+   ],
+   "matched": true,
+   "loss": 0.0,
+   "raw_loss": -0.04,
+   "wr_loss": 0.0,
+   "lead_before": 2.88,
+   "lead_after": 2.92
+  },
+  {
+   "ply": 9,
+   "color": "B",
+   "move": "F4",
+   "best": "G5",
+   "top3": [
+    "G5",
+    "H5",
+    "F4"
+   ],
+   "matched": false,
+   "loss": 1.16,
+   "raw_loss": 1.16,
+   "wr_loss": 0.0,
+   "lead_before": -2.92,
+   "lead_after": -4.07
+  },
+  {
+   "ply": 10,
+   "color": "W",
+   "move": "D4",
+   "best": "D4",
+   "top3": [
+    "D4",
+    "F7",
+    "E6"
+   ],
+   "matched": true,
+   "loss": 0.0,
+   "raw_loss": -0.05,
+   "wr_loss": 0.0,
+   "lead_before": 4.07,
+   "lead_after": 4.12
+  },
+  {
+   "ply": 11,
+   "color": "B",
+   "move": "B7",
+   "best": "F7",
+   "top3": [
+    "F7",
+    "B3",
+    "D2"
+   ],
+   "matched": false,
+   "loss": 3.69,
+   "raw_loss": 3.69,
+   "wr_loss": 0.0233,
+   "lead_before": -4.12,
+   "lead_after": -7.81
+  },
+  {
+   "ply": 12,
+   "color": "W",
+   "move": "F7",
+   "best": "F7",
+   "top3": [
+    "F7",
+    "E7",
+    "H4"
+   ],
+   "matched": true,
+   "loss": 0.0,
+   "raw_loss": -0.01,
+   "wr_loss": 0.0002,
+   "lead_before": 7.81,
+   "lead_after": 7.82
+  },
+  {
+   "ply": 13,
+   "color": "B",
+   "move": "G5",
+   "best": "E3",
+   "top3": [
+    "E3",
+    "H5",
+    "G5"
+   ],
+   "matched": false,
+   "loss": 0.55,
+   "raw_loss": 0.55,
+   "wr_loss": 0.0,
+   "lead_before": -7.82,
+   "lead_after": -8.37
+  },
+  {
+   "ply": 14,
+   "color": "W",
+   "move": "E7",
+   "best": "E7",
+   "top3": [
+    "E7",
+    "E8",
+    "D5"
+   ],
+   "matched": true,
+   "loss": 0.0,
+   "raw_loss": -0.33,
+   "wr_loss": 0.0,
+   "lead_before": 8.37,
+   "lead_after": 8.69
+  },
+  {
+   "ply": 15,
+   "color": "B",
+   "move": "D5",
+   "best": "D8",
+   "top3": [
+    "D8",
+    "E3",
+    "D5"
+   ],
+   "matched": false,
+   "loss": 0.86,
+   "raw_loss": 0.86,
+   "wr_loss": 0.0002,
+   "lead_before": -8.69,
+   "lead_after": -9.55
+  },
+  {
+   "ply": 16,
+   "color": "W",
+   "move": "E3",
+   "best": "E3",
+   "top3": [
+    "E3",
+    "E2",
+    "D2"
+   ],
+   "matched": true,
+   "loss": 0.0,
+   "raw_loss": -0.39,
+   "wr_loss": 0.0005,
+   "lead_before": 9.55,
+   "lead_after": 9.94
+  },
+  {
+   "ply": 17,
+   "color": "B",
+   "move": "H7",
+   "best": "D8",
+   "top3": [
+    "D8",
+    "E2",
+    "H6"
+   ],
+   "matched": false,
+   "loss": 4.94,
+   "raw_loss": 4.94,
+   "wr_loss": 0.001,
+   "lead_before": -9.94,
+   "lead_after": -14.88
+  },
+  {
+   "ply": 18,
+   "color": "W",
+   "move": "H6",
+   "best": "H6",
+   "top3": [
+    "H6",
+    "H5",
+    "H8"
+   ],
+   "matched": true,
+   "loss": 0.0,
+   "raw_loss": -0.37,
+   "wr_loss": 0.0003,
+   "lead_before": 14.88,
+   "lead_after": 15.25
+  },
+  {
+   "ply": 19,
+   "color": "B",
+   "move": "G8",
+   "best": "H5",
+   "top3": [
+    "H5",
+    "D8",
+    "F2"
+   ],
+   "matched": false,
+   "loss": 3.31,
+   "raw_loss": 3.31,
+   "wr_loss": 0.001,
+   "lead_before": -15.25,
+   "lead_after": -18.56
+  },
+  {
+   "ply": 20,
+   "color": "W",
+   "move": "D8",
+   "best": "D8",
+   "top3": [
+    "D8",
+    "H5",
+    "G2"
+   ],
+   "matched": true,
+   "loss": 0.0,
+   "raw_loss": -0.71,
+   "wr_loss": 0.0002,
+   "lead_before": 18.56,
+   "lead_after": 19.27
+  },
+  {
+   "ply": 21,
+   "color": "B",
+   "move": "J6",
+   "best": "F2",
+   "top3": [
+    "F2",
+    "H5",
+    "F3"
+   ],
+   "matched": false,
+   "loss": 3.2,
+   "raw_loss": 3.2,
+   "wr_loss": 0.0005,
+   "lead_before": -19.27,
+   "lead_after": -22.47
+  },
+  {
+   "ply": 22,
+   "color": "W",
+   "move": "H5",
+   "best": "H5",
+   "top3": [
+    "H5",
+    "J5",
+    "G7"
+   ],
+   "matched": true,
+   "loss": 0.0,
+   "raw_loss": -0.64,
+   "wr_loss": 0.0,
+   "lead_before": 22.47,
+   "lead_after": 23.11
+  },
+  {
+   "ply": 23,
+   "color": "B",
+   "move": "H4",
+   "best": "H4",
+   "top3": [
+    "H4",
+    "B3",
+    "F8"
+   ],
+   "matched": true,
+   "loss": 0.0,
+   "raw_loss": -0.7,
+   "wr_loss": 0.0002,
+   "lead_before": -23.11,
+   "lead_after": -22.41
+  },
+  {
+   "ply": 24,
+   "color": "W",
+   "move": "J5",
+   "best": "J5",
+   "top3": [
+    "J5",
+    "J4",
+    "G3"
+   ],
+   "matched": true,
+   "loss": 0.0,
+   "raw_loss": -0.3,
+   "wr_loss": 0.0002,
+   "lead_before": 22.41,
+   "lead_after": 22.71
+  },
+  {
+   "ply": 25,
+   "color": "B",
+   "move": "F8",
+   "best": "F2",
+   "top3": [
+    "F2",
+    "F3",
+    "F8"
+   ],
+   "matched": false,
+   "loss": 0.0,
+   "raw_loss": -0.04,
+   "wr_loss": 0.0001,
+   "lead_before": -22.71,
+   "lead_after": -22.67
+  },
+  {
+   "ply": 26,
+   "color": "W",
+   "move": "E8",
+   "best": "E8",
+   "top3": [
+    "E8",
+    "G3",
+    "G7"
+   ],
+   "matched": true,
+   "loss": 0.0,
+   "raw_loss": -0.42,
+   "wr_loss": 0.0,
+   "lead_before": 22.67,
+   "lead_after": 23.09
+  },
+  {
+   "ply": 27,
+   "color": "B",
+   "move": "J7",
+   "best": "F2",
+   "top3": [
+    "F2",
+    "F3",
+    "J8"
+   ],
+   "matched": false,
+   "loss": 0.88,
+   "raw_loss": 0.88,
+   "wr_loss": 0.0004,
+   "lead_before": -23.09,
+   "lead_after": -23.98
+  },
+  {
+   "ply": 28,
+   "color": "W",
+   "move": "F9",
+   "best": "F9",
+   "top3": [
+    "F9",
+    "G7",
+    "H3"
+   ],
+   "matched": true,
+   "loss": 0.0,
+   "raw_loss": -0.02,
+   "wr_loss": 0.0,
+   "lead_before": 23.98,
+   "lead_after": 24.0
+  },
+  {
+   "ply": 29,
+   "color": "B",
+   "move": "H8",
+   "best": "F2",
+   "top3": [
+    "F2",
+    "H9",
+    "F3"
+   ],
+   "matched": false,
+   "loss": 2.92,
+   "raw_loss": 2.92,
+   "wr_loss": 0.0002,
+   "lead_before": -24.0,
+   "lead_after": -26.92
+  },
+  {
+   "ply": 30,
+   "color": "W",
+   "move": "G2",
+   "best": "G2",
+   "top3": [
+    "G2",
+    "G3",
+    "H3"
+   ],
+   "matched": true,
+   "loss": 0.0,
+   "raw_loss": -0.34,
+   "wr_loss": 0.0002,
+   "lead_before": 26.92,
+   "lead_after": 27.25
+  },
+  {
+   "ply": 31,
+   "color": "B",
+   "move": "C8",
+   "best": "G9",
+   "top3": [
+    "G9",
+    "F6",
+    "F3"
+   ],
+   "matched": false,
+   "loss": 10.09,
+   "raw_loss": 10.09,
+   "wr_loss": 0.0001,
+   "lead_before": -27.25,
+   "lead_after": -37.34
+  },
+  {
+   "ply": 32,
+   "color": "W",
+   "move": "H3",
+   "best": "H3",
+   "top3": [
+    "H3",
+    "G9",
+    "G3"
+   ],
+   "matched": true,
+   "loss": 0.0,
+   "raw_loss": -0.35,
+   "wr_loss": 0.0004,
+   "lead_before": 37.34,
+   "lead_after": 37.69
+  },
+  {
+   "ply": 33,
+   "color": "B",
+   "move": "J4",
+   "best": "J4",
+   "top3": [
+    "J4",
+    "G9",
+    "F3"
+   ],
+   "matched": true,
+   "loss": 0.0,
+   "raw_loss": -2.69,
+   "wr_loss": 0.0,
+   "lead_before": -37.69,
+   "lead_after": -35.0
+  },
+  {
+   "ply": 34,
+   "color": "W",
+   "move": "G9",
+   "best": "G3",
+   "top3": [
+    "G3",
+    "G9",
+    "E9"
+   ],
+   "matched": false,
+   "loss": 0.0,
+   "raw_loss": -0.29,
+   "wr_loss": 0.0,
+   "lead_before": 35.0,
+   "lead_after": 35.29
+  },
+  {
+   "ply": 35,
+   "color": "B",
+   "move": "E9",
+   "best": "B4",
+   "top3": [
+    "B4",
+    "G3",
+    "A6"
+   ],
+   "matched": false,
+   "loss": 1.26,
+   "raw_loss": 1.26,
+   "wr_loss": 0.0001,
+   "lead_before": -35.29,
+   "lead_after": -36.55
+  },
+  {
+   "ply": 36,
+   "color": "W",
+   "move": "D9",
+   "best": "D9",
+   "top3": [
+    "D9",
+    "G3",
+    "J3"
+   ],
+   "matched": true,
+   "loss": 0.0,
+   "raw_loss": -0.34,
+   "wr_loss": 0.0001,
+   "lead_before": 36.55,
+   "lead_after": 36.89
+  },
+  {
+   "ply": 37,
+   "color": "B",
+   "move": "F6",
+   "best": "C9",
+   "top3": [
+    "C9",
+    "G3",
+    "B4"
+   ],
+   "matched": false,
+   "loss": 0.57,
+   "raw_loss": 0.57,
+   "wr_loss": 0.0,
+   "lead_before": -36.89,
+   "lead_after": -37.47
+  },
+  {
+   "ply": 38,
+   "color": "W",
+   "move": "G7",
+   "best": "G7",
+   "top3": [
+    "G7",
+    "A7",
+    "A8"
+   ],
+   "matched": true,
+   "loss": 0.0,
+   "raw_loss": -0.39,
+   "wr_loss": 0.0001,
+   "lead_before": 37.47,
+   "lead_after": 37.85
+  }
+ ]
+}

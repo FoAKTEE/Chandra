@@ -1,0 +1,1073 @@
+{
+ "generated_at": "2026-10-08 19:54:55",
+ "run_dir": "runs/move47/mcts-game-20261008",
+ "condition": {
+  "engine": "MCTS v2 + model service (sandboxed Opus 5.5 xhigh workers) + online heuristic learning (--learn --heuristics), one learning state, DAG and lesson memory shared by all games",
+  "time_per_move_s": 1800,
+  "threads": 64,
+  "llm_workers_per_stream": 8,
+  "streams": {
+   "A": [
+    "k1-full x1 (B)"
+   ]
+  },
+  "play_args": [
+   "--n-thr",
+   "100000",
+   "--decide-extend",
+   "180",
+   "--max-nodes",
+   "60000000",
+   "--set",
+   "observe_max_samples=1024",
+   "--job-timeout",
+   "900",
+   "--heuristic-timeout",
+   "1500",
+   "--heuristic-min-visits",
+   "4096",
+   "--heuristic-surprises",
+   "6",
+   "--hl",
+   "capacity=80000"
+  ],
+  "decision": "mcts/decide.py (evaluated)",
+  "start_state": {
+   "copied_from": "runs/move47/mcts-strength-20261007 (hl/, dag.db, memory.db)",
+   "version": "hl-v202",
+   "rules": 36,
+   "book_version": 329,
+   "updates": 173,
+   "proposals": 165
+  }
+ },
+ "rows": [
+  {
+   "arena": "kata1",
+   "opponent": "k1-full",
+   "opponent_elo": null,
+   "rated": false,
+   "games": 1,
+   "unfinished": 0,
+   "wins": 0,
+   "losses": 1,
+   "colors": {
+    "B": 1,
+    "W": 0
+   },
+   "end_reasons": {
+    "adjudicated": 1
+   },
+   "elo": null,
+   "reviewer": "kata1-tf3-b11c768, 1600 visits",
+   "reviewed_moves": 19,
+   "point_loss_per_move": 1.836,
+   "point_loss_median": 0.88,
+   "blunders": 1,
+   "match_rate": 0.211,
+   "decisions": 19,
+   "search_s_per_move": 1632.3,
+   "wall_s_per_move": 2162.9,
+   "sims_per_move_median": 326234419,
+   "usd": 664.6,
+   "usd_per_move": 34.979,
+   "sessions": 1417,
+   "sessions_per_move": 74.58,
+   "decision_rules": {
+    "most_visits_evaluated": 18,
+    "most_visits_unevaluated": 1
+   },
+   "no_model_input": 0,
+   "waited_for_model_s": 3033.8
+  }
+ ],
+ "elo_pooled_rated": null,
+ "games": [
+  {
+   "stream": "A",
+   "segment": "00-kata1-k1-full",
+   "arena": "kata1",
+   "run_id": "mcts-v2---model---hl--full-system---30-m-c919",
+   "game_no": 1,
+   "opponent": "k1-full",
+   "our_color": "B",
+   "status": "finished",
+   "result": "W+",
+   "winner": "opponent",
+   "end_reason": "adjudicated",
+   "plies": 38,
+   "decisions": 19,
+   "score": 0.0,
+   "review": {
+    "moves": 19,
+    "avg_loss": 1.836,
+    "blunders": 1,
+    "match_rate": 0.211,
+    "losses": [
+     0.1,
+     0.2,
+     1.15,
+     0.0,
+     1.16,
+     3.69,
+     0.55,
+     0.86,
+     4.94,
+     3.31,
+     3.2,
+     0.0,
+     0.0,
+     0.88,
+     2.92,
+     10.09,
+     0.0,
+     1.26,
+     0.57
+    ]
+   },
+   "rated": false,
+   "cost_usd": 664.6,
+   "sessions": 1417,
+   "usd_per_move": 34.979,
+   "sessions_per_move": 74.58,
+   "search_s": 1632.3,
+   "wall_s": 2162.9,
+   "sims_median": 326234419,
+   "decision_rules": {
+    "most_visits_evaluated": 18,
+    "most_visits_unevaluated": 1
+   },
+   "no_model_input": 0,
+   "waited_for_model_s": 3033.8,
+   "weights_first": "hl-v202",
+   "weights_last": "hl-v223",
+   "book": {
+    "jobs": 19,
+    "rules_proposed": 43,
+    "rules_accepted": 4,
+    "rules_rejected": 39,
+    "nudges_proposed": 13,
+    "nudges_accepted": 0,
+    "nudges_rejected": 13,
+    "accepted_rules": [
+     "P498",
+     "P503",
+     "P543",
+     "P550"
+    ],
+    "book_version_last": 367
+   },
+   "sgf": "(;GM[1]FF[4]CA[UTF-8]AP[goarena:0.1]SZ[9]KM[7.5]RU[Chinese]PB[MCTS v2 + model + HL (full system), 30 min/move / A k1-full]PW[KataGo kata1 1600 visits [k1-full\\]]DT[2026-10-08]EV[goarena run mcts-v2---model---hl--full-system---30-m-c919 game 1]RE[W+]GC[end_reason=adjudicated]\n;B[ee];W[cf];B[ce];W[be];B[cd];W[bd];B[cc];W[gd];B[ff];W[df];B[bc];W[fc];B[ge]\n;W[ec];B[de];W[eg];B[hc];W[hd];B[gb];W[db];B[id];W[he];B[hf];W[ie];B[fb];W[eb]\n;B[ic];W[fa];B[hb];W[gh];B[cb];W[hg];B[if];W[ga];B[ea];W[da];B[fd];W[gc])\n",
+   "move_list": "1.BE5 2.WC4 3.BC5 4.WB5 5.BC6 6.WB6 7.BC7 8.WG6 9.BF4 10.WD4 11.BB7 12.WF7 13.BG5 14.WE7 15.BD5 16.WE3 17.BH7 18.WH6 19.BG8 20.WD8 21.BJ6 22.WH5 23.BH4 24.WJ5 25.BF8 26.WE8 27.BJ7 28.WF9 29.BH8 30.WG2 31.BC8 32.WH3 33.BJ4 34.WG9 35.BE9 36.WD9 37.BF6 38.WG7"
+  }
+ ],
+ "moves": [
+  {
+   "label": "A0g1p1",
+   "opponent": "k1-full",
+   "color": "B",
+   "ply": 1,
+   "move": "E5",
+   "rule": "most_visits_evaluated",
+   "extension": null,
+   "search_s": 1800.01,
+   "wall_s": 1836.29,
+   "sims": 78368179,
+   "root_n_start": 0,
+   "q": 0.441,
+   "weights": "hl-v202",
+   "sessions": 56,
+   "usd": 20.884,
+   "kinds": {
+    "expand": 54,
+    "abstract": 1,
+    "heuristic": 1
+   },
+   "model_input": true,
+   "waited_s": 0.0,
+   "loss": 0.1
+  },
+  {
+   "label": "A0g1p3",
+   "opponent": "k1-full",
+   "color": "B",
+   "ply": 3,
+   "move": "C5",
+   "rule": "most_visits_evaluated",
+   "extension": null,
+   "search_s": 777.06,
+   "wall_s": 1815.49,
+   "sims": 136862133,
+   "root_n_start": 2932852,
+   "q": 0.461,
+   "weights": "hl-v203",
+   "sessions": 77,
+   "usd": 24.124,
+   "kinds": {
+    "refute": 1,
+    "expand": 74,
+    "abstract": 1,
+    "heuristic": 1
+   },
+   "model_input": true,
+   "waited_s": 0.0,
+   "loss": 0.2
+  },
+  {
+   "label": "A0g1p5",
+   "opponent": "k1-full",
+   "color": "B",
+   "ply": 5,
+   "move": "C6",
+   "rule": "most_visits_evaluated",
+   "extension": null,
+   "search_s": 375.55,
+   "wall_s": 4131.28,
+   "sims": 62333706,
+   "root_n_start": 72889030,
+   "q": 0.483,
+   "weights": "hl-v204",
+   "sessions": 200,
+   "usd": 64.32,
+   "kinds": {
+    "expand": 198,
+    "abstract": 1,
+    "heuristic": 1
+   },
+   "model_input": true,
+   "waited_s": 0.0,
+   "loss": 1.15
+  },
+  {
+   "label": "A0g1p7",
+   "opponent": "k1-full",
+   "color": "B",
+   "ply": 7,
+   "move": "C7",
+   "rule": "most_visits_evaluated",
+   "extension": null,
+   "search_s": 1640.4,
+   "wall_s": 1812.4,
+   "sims": 228661830,
+   "root_n_start": 310623,
+   "q": 0.477,
+   "weights": "hl-v206",
+   "sessions": 111,
+   "usd": 38.602,
+   "kinds": {
+    "expand": 108,
+    "refute": 1,
+    "abstract": 1,
+    "heuristic": 1
+   },
+   "model_input": true,
+   "waited_s": 0.0,
+   "loss": 0.0
+  },
+  {
+   "label": "A0g1p9",
+   "opponent": "k1-full",
+   "color": "B",
+   "ply": 9,
+   "move": "F4",
+   "rule": "most_visits_evaluated",
+   "extension": null,
+   "search_s": 1800.0,
+   "wall_s": 1815.65,
+   "sims": 274793660,
+   "root_n_start": 141302,
+   "q": 0.48,
+   "weights": "hl-v207",
+   "sessions": 109,
+   "usd": 39.538,
+   "kinds": {
+    "expand": 107,
+    "abstract": 1,
+    "heuristic": 1
+   },
+   "model_input": true,
+   "waited_s": 0.0,
+   "loss": 1.16
+  },
+  {
+   "label": "A0g1p11",
+   "opponent": "k1-full",
+   "color": "B",
+   "ply": 11,
+   "move": "B7",
+   "rule": "most_visits_evaluated",
+   "extension": null,
+   "search_s": 1734.51,
+   "wall_s": 1813.65,
+   "sims": 233567050,
+   "root_n_start": 63086,
+   "q": 0.468,
+   "weights": "hl-v209",
+   "sessions": 100,
+   "usd": 40.805,
+   "kinds": {
+    "expand": 98,
+    "abstract": 1,
+    "heuristic": 1
+   },
+   "model_input": true,
+   "waited_s": 0.0,
+   "loss": 3.69
+  },
+  {
+   "label": "A0g1p13",
+   "opponent": "k1-full",
+   "color": "B",
+   "ply": 13,
+   "move": "G5",
+   "rule": "most_visits_evaluated",
+   "extension": null,
+   "search_s": 1740.55,
+   "wall_s": 5037.64,
+   "sims": 223382648,
+   "root_n_start": 18059,
+   "q": 0.457,
+   "weights": "hl-v210",
+   "sessions": 55,
+   "usd": 23.043,
+   "kinds": {
+    "expand": 53,
+    "abstract": 1,
+    "heuristic": 1
+   },
+   "model_input": true,
+   "waited_s": 0.0,
+   "loss": 0.55
+  },
+  {
+   "label": "A0g1p15",
+   "opponent": "k1-full",
+   "color": "B",
+   "ply": 15,
+   "move": "D5",
+   "rule": "most_visits_evaluated",
+   "extension": null,
+   "search_s": 1731.32,
+   "wall_s": 1843.34,
+   "sims": 250221252,
+   "root_n_start": 3475,
+   "q": 0.455,
+   "weights": "hl-v211",
+   "sessions": 79,
+   "usd": 38.31,
+   "kinds": {
+    "expand": 76,
+    "refute": 1,
+    "abstract": 1,
+    "heuristic": 1
+   },
+   "model_input": true,
+   "waited_s": 2404.1,
+   "loss": 0.86
+  },
+  {
+   "label": "A0g1p17",
+   "opponent": "k1-full",
+   "color": "B",
+   "ply": 17,
+   "move": "H7",
+   "rule": "most_visits_evaluated",
+   "extension": null,
+   "search_s": 1743.56,
+   "wall_s": 1817.23,
+   "sims": 378224282,
+   "root_n_start": 83558,
+   "q": 0.45,
+   "weights": "hl-v212",
+   "sessions": 75,
+   "usd": 37.012,
+   "kinds": {
+    "expand": 72,
+    "refute": 1,
+    "abstract": 1,
+    "heuristic": 1
+   },
+   "model_input": true,
+   "waited_s": 0.0,
+   "loss": 4.94
+  },
+  {
+   "label": "A0g1p19",
+   "opponent": "k1-full",
+   "color": "B",
+   "ply": 19,
+   "move": "G8",
+   "rule": "most_visits_evaluated",
+   "extension": null,
+   "search_s": 1750.75,
+   "wall_s": 1815.61,
+   "sims": 388814241,
+   "root_n_start": 198929326,
+   "q": 0.455,
+   "weights": "hl-v213",
+   "sessions": 69,
+   "usd": 40.262,
+   "kinds": {
+    "expand": 66,
+    "refute": 1,
+    "abstract": 1,
+    "heuristic": 1
+   },
+   "model_input": true,
+   "waited_s": 0.0,
+   "loss": 3.31
+  },
+  {
+   "label": "A0g1p21",
+   "opponent": "k1-full",
+   "color": "B",
+   "ply": 21,
+   "move": "J6",
+   "rule": "most_visits_evaluated",
+   "extension": null,
+   "search_s": 1749.19,
+   "wall_s": 1812.82,
+   "sims": 273970637,
+   "root_n_start": 10380,
+   "q": 0.482,
+   "weights": "hl-v214",
+   "sessions": 74,
+   "usd": 43.507,
+   "kinds": {
+    "expand": 71,
+    "refute": 1,
+    "abstract": 1,
+    "heuristic": 1
+   },
+   "model_input": true,
+   "waited_s": 0.0,
+   "loss": 3.2
+  },
+  {
+   "label": "A0g1p23",
+   "opponent": "k1-full",
+   "color": "B",
+   "ply": 23,
+   "move": "H4",
+   "rule": "most_visits_evaluated",
+   "extension": null,
+   "search_s": 1747.28,
+   "wall_s": 1811.84,
+   "sims": 400883193,
+   "root_n_start": 406872,
+   "q": 0.492,
+   "weights": "hl-v215",
+   "sessions": 72,
+   "usd": 43.983,
+   "kinds": {
+    "expand": 69,
+    "refute": 1,
+    "abstract": 1,
+    "heuristic": 1
+   },
+   "model_input": true,
+   "waited_s": 0.0,
+   "loss": 0.0
+  },
+  {
+   "label": "A0g1p25",
+   "opponent": "k1-full",
+   "color": "B",
+   "ply": 25,
+   "move": "F8",
+   "rule": "most_visits_evaluated",
+   "extension": null,
+   "search_s": 1800.0,
+   "wall_s": 1836.22,
+   "sims": 326234419,
+   "root_n_start": 233502,
+   "q": 0.493,
+   "weights": "hl-v216",
+   "sessions": 74,
+   "usd": 40.26,
+   "kinds": {
+    "expand": 71,
+    "refute": 1,
+    "abstract": 1,
+    "heuristic": 1
+   },
+   "model_input": true,
+   "waited_s": 0.0,
+   "loss": 0.0
+  },
+  {
+   "label": "A0g1p27",
+   "opponent": "k1-full",
+   "color": "B",
+   "ply": 27,
+   "move": "J7",
+   "rule": "most_visits_evaluated",
+   "extension": null,
+   "search_s": 1755.14,
+   "wall_s": 1810.95,
+   "sims": 413218085,
+   "root_n_start": 23358008,
+   "q": 0.494,
+   "weights": "hl-v217",
+   "sessions": 56,
+   "usd": 37.52,
+   "kinds": {
+    "expand": 52,
+    "refute": 2,
+    "abstract": 1,
+    "heuristic": 1
+   },
+   "model_input": true,
+   "waited_s": 0.0,
+   "loss": 0.88
+  },
+  {
+   "label": "A0g1p29",
+   "opponent": "k1-full",
+   "color": "B",
+   "ply": 29,
+   "move": "H8",
+   "rule": "most_visits_evaluated",
+   "extension": null,
+   "search_s": 1755.3,
+   "wall_s": 1811.99,
+   "sims": 359009692,
+   "root_n_start": 179430,
+   "q": 0.475,
+   "weights": "hl-v218",
+   "sessions": 57,
+   "usd": 37.003,
+   "kinds": {
+    "expand": 54,
+    "refute": 1,
+    "abstract": 1,
+    "heuristic": 1
+   },
+   "model_input": true,
+   "waited_s": 0.0,
+   "loss": 2.92
+  },
+  {
+   "label": "A0g1p31",
+   "opponent": "k1-full",
+   "color": "B",
+   "ply": 31,
+   "move": "C8",
+   "rule": "most_visits_unevaluated",
+   "extension": "time",
+   "search_s": 1757.64,
+   "wall_s": 2809.56,
+   "sims": 405369474,
+   "root_n_start": 103971,
+   "q": 0.773,
+   "weights": "hl-v219",
+   "sessions": 7,
+   "usd": 4.602,
+   "kinds": {
+    "expand": 6,
+    "heuristic": 1
+   },
+   "model_input": true,
+   "waited_s": 0.0,
+   "loss": 10.09
+  },
+  {
+   "label": "A0g1p33",
+   "opponent": "k1-full",
+   "color": "B",
+   "ply": 33,
+   "move": "J4",
+   "rule": "most_visits_evaluated",
+   "extension": null,
+   "search_s": 1755.12,
+   "wall_s": 1810.98,
+   "sims": 447068345,
+   "root_n_start": 2865631,
+   "q": 0.53,
+   "weights": "hl-v220",
+   "sessions": 20,
+   "usd": 15.078,
+   "kinds": {
+    "expand": 17,
+    "refute": 1,
+    "abstract": 1,
+    "heuristic": 1
+   },
+   "model_input": true,
+   "waited_s": 629.7,
+   "loss": 0.0
+  },
+  {
+   "label": "A0g1p35",
+   "opponent": "k1-full",
+   "color": "B",
+   "ply": 35,
+   "move": "E9",
+   "rule": "most_visits_evaluated",
+   "extension": null,
+   "search_s": 1799.99,
+   "wall_s": 1835.68,
+   "sims": 416470015,
+   "root_n_start": 66417,
+   "q": 0.481,
+   "weights": "hl-v221",
+   "sessions": 63,
+   "usd": 42.801,
+   "kinds": {
+    "expand": 60,
+    "refute": 1,
+    "abstract": 1,
+    "heuristic": 1
+   },
+   "model_input": true,
+   "waited_s": 0.0,
+   "loss": 1.26
+  },
+  {
+   "label": "A0g1p37",
+   "opponent": "k1-full",
+   "color": "B",
+   "ply": 37,
+   "move": "F6",
+   "rule": "most_visits_evaluated",
+   "extension": null,
+   "search_s": 1799.99,
+   "wall_s": 1816.69,
+   "sims": 413867832,
+   "root_n_start": 8470658,
+   "q": 0.418,
+   "weights": "hl-v223",
+   "sessions": 63,
+   "usd": 32.946,
+   "kinds": {
+    "expand": 60,
+    "refute": 1,
+    "abstract": 1,
+    "heuristic": 1
+   },
+   "model_input": true,
+   "waited_s": 0.0,
+   "loss": 0.57
+  }
+ ],
+ "totals": {
+  "games_finished": 1,
+  "games_unfinished": 0,
+  "decisions": 19,
+  "cost_usd": 664.6,
+  "cost_unattributed_usd": 0,
+  "sessions": 1417,
+  "sessions_by_kind": {
+   "expand": 1366,
+   "abstract": 18,
+   "heuristic": 19,
+   "refute": 14
+  },
+  "failed_sessions": 20,
+  "rate_limited_sessions": 15,
+  "usd_per_move": 34.979,
+  "model_input_decisions": 19,
+  "no_model_input_decisions": 0,
+  "waited_for_model_s": 3033.8,
+  "search_s_per_move": 1632.3,
+  "wall_s_per_move": 2162.9
+ },
+ "learning": {
+  "updates": 19,
+  "accepted": 19,
+  "version_start": "hl-v202",
+  "version_now": "hl-v225",
+  "update_s_mean": 16.91,
+  "book": {
+   "book_version": 367,
+   "active_rules": 40,
+   "start_rules": 36,
+   "new_rules": [
+    {
+     "id": "R37",
+     "name": "open-jump-cap-of-older-lone-opp-stone",
+     "text": "In an open area, the empty third- or fourth-line point a one-point jump straight out from a lone opponent stone they did not just play, with the point between and the stone's sides empty and no other opponent stone near, is a strong cap or approach.",
+     "weight_proposed": 1.2,
+     "weight_now": 1.4094,
+     "label": "A0g1p3",
+     "accepted_in": "hl-v205",
+     "gain": 0.0007440713363809829,
+     "ci90": [
+      4.232472041160097e-05,
+      0.0015954902755299467
+     ],
+     "gain_as_proposed": 0.0006958843731407544
+    },
+    {
+     "id": "R38",
+     "name": "open-third-line-knight-approach-empty-area",
+     "text": "On the third line, in an otherwise empty 5x5 area with none of your stones, the point a knight's move from an opponent stone (or pair) is a big approach or corner move. It is often better than a contact reply near the last move.",
+     "weight_proposed": 0.8,
+     "weight_now": 0.3842,
+     "label": "A0g1p7",
+     "accepted_in": "hl-v208",
+     "gain": 0.0006737797293160484,
+     "ci90": [
+      0.00022407102717990397,
+      0.0011899985758091118
+     ],
+     "gain_as_proposed": 0.0006563330840261999
+    },
+    {
+     "id": "R39",
+     "name": "first-line-atari-chasing-escaping-chain",
+     "text": "A first-line atari on an opponent chain of two or more stones that escapes the ladder only pushes it out to join its friends; the atari stone gains nothing, so it is usually a slow gote move.",
+     "weight_proposed": -0.8,
+     "weight_now": 0.2921,
+     "label": "A0g1p33",
+     "accepted_in": "hl-v222",
+     "gain": 0.00015448590048377446,
+     "ci90": [
+      6.62521281644234e-05,
+      0.0002534941827651487
+     ],
+     "gain_as_proposed": -0.0024347969523613785
+    },
+    {
+     "id": "R40",
+     "name": "slow-fill-of-touched-diagonal-link",
+     "text": "Do not fill one cutting point of your own diagonal link when the other cutting point is still empty and opponent stones touch the point from both other sides: the link is miai, so the connection is slow even if it also takes a liberty.",
+     "weight_proposed": -0.8,
+     "weight_now": -0.239,
+     "label": "A0g1p37",
+     "accepted_in": "hl-v225",
+     "gain": 0.00036064103356320666,
+     "ci90": [
+      4.529459242470204e-05,
+      0.0007681172468446384
+     ],
+     "gain_as_proposed": 0.00011815339531113351
+    }
+   ],
+   "start_rules_now": [
+    {
+     "id": "R1",
+     "name": "third-line-knight-from-lone-stone",
+     "weight_start": 1.1074,
+     "weight_now": 1.0863
+    },
+    {
+     "id": "R2",
+     "name": "third-line-knight-facing-opp-stone",
+     "weight_start": 1.1093,
+     "weight_now": 1.1509
+    },
+    {
+     "id": "R3",
+     "name": "atari-on-runaway-lone-stone",
+     "weight_start": 0.3383,
+     "weight_now": 0.3705
+    },
+    {
+     "id": "R4",
+     "name": "descend-past-parallel-pair-when-short-of-libs",
+     "weight_start": 0.6229,
+     "weight_now": 0.7555
+    },
+    {
+     "id": "R5",
+     "name": "extend-at-head-of-own-two-vs-contact",
+     "weight_start": 0.3649,
+     "weight_now": 0.3328
+    },
+    {
+     "id": "R6",
+     "name": "save-lone-armpit-stone",
+     "weight_start": 0.1641,
+     "weight_now": 0.4903
+    },
+    {
+     "id": "R7",
+     "name": "first-line-hane-under-crawling-second-line-chain",
+     "weight_start": 0.1041,
+     "weight_now": 0.3065
+    },
+    {
+     "id": "R8",
+     "name": "second-line-descent-at-head-vs-contact",
+     "weight_start": -0.3067,
+     "weight_now": -0.2374
+    },
+    {
+     "id": "R9",
+     "name": "slow-capture-of-abandoned-edge-stones",
+     "weight_start": -1.0214,
+     "weight_now": -1.006
+    },
+    {
+     "id": "R10",
+     "name": "fill-own-knight-link-gap-in-centre",
+     "weight_start": 0.0224,
+     "weight_now": 0.1606
+    },
+    {
+     "id": "R11",
+     "name": "stretch-head-of-own-two-vs-side-press",
+     "weight_start": 0.5135,
+     "weight_now": 0.5477
+    },
+    {
+     "id": "R12",
+     "name": "capture-abandoned-armpit-stone",
+     "weight_start": -0.7569,
+     "weight_now": -0.5603
+    },
+    {
+     "id": "R13",
+     "name": "kosumi-link-extension-of-lone-two-lib-stone",
+     "weight_start": 1.0497,
+     "weight_now": 0.8837
+    },
+    {
+     "id": "R14",
+     "name": "one-two-point-contact-in-corner",
+     "weight_start": 0.6724,
+     "weight_now": 0.7857
+    },
+    {
+     "id": "R15",
+     "name": "corner-2-1-under-crowded-2-2-block",
+     "weight_start": 0.4615,
+     "weight_now": 0.4261
+    },
+    {
+     "id": "R16",
+     "name": "connect-cut-lone-two-lib-stone-to-line",
+     "weight_start": 0.3198,
+     "weight_now": 0.3198
+    },
+    {
+     "id": "R17",
+     "name": "first-line-block-end-of-opp-crawl-under-wall",
+     "weight_start": 1.0244,
+     "weight_now": 0.8442
+    },
+    {
+     "id": "R18",
+     "name": "edge-hane-under-strong-opp-boundary-stone",
+     "weight_start": 0.5471,
+     "weight_now": 0.4336
+    },
+    {
+     "id": "R19",
+     "name": "complete-cut-through-knights-move",
+     "weight_start": 0.961,
+     "weight_now": 1.068
+    },
+    {
+     "id": "R20",
+     "name": "attach-lone-stone-with-jump-support",
+     "weight_start": 0.8994,
+     "weight_now": 0.7931
+    },
+    {
+     "id": "R21",
+     "name": "atari-crosscut-stone-from-outside",
+     "weight_start": -0.3965,
+     "weight_now": -0.3765
+    },
+    {
+     "id": "R22",
+     "name": "hane-head-of-parallel-opp-two",
+     "weight_start": 0.4332,
+     "weight_now": 0.6201
+    },
+    {
+     "id": "R23",
+     "name": "diagonal-move-beside-own-atari-stone-liberty",
+     "weight_start": -0.3926,
+     "weight_now": -0.5657
+    },
+    {
+     "id": "R24",
+     "name": "second-line-kosumi-under-opp-third-line-stone",
+     "weight_start": -0.177,
+     "weight_now": -0.177
+    },
+    {
+     "id": "R25",
+     "name": "extend-two-lib-group-to-three-libs",
+     "weight_start": 0.5139,
+     "weight_now": 0.6801
+    },
+    {
+     "id": "R26",
+     "name": "fill-liberty-of-big-three-lib-chain",
+     "weight_start": 1.5021,
+     "weight_now": 1.5773
+    },
+    {
+     "id": "R27",
+     "name": "edge-connect-across-opp-cut",
+     "weight_start": 1.0644,
+     "weight_now": 1.0947
+    },
+    {
+     "id": "R28",
+     "name": "lone-stone-in-armpit-of-strong-chain",
+     "weight_start": -1.1328,
+     "weight_now": -0.9807
+    },
+    {
+     "id": "R29",
+     "name": "butt-between-own-and-opp-jump-stones",
+     "weight_start": -0.7062,
+     "weight_now": -0.7913
+    },
+    {
+     "id": "R30",
+     "name": "second-line-base-under-own-fourth-line-stone",
+     "weight_start": -0.2368,
+     "weight_now": -0.2062
+    },
+    {
+     "id": "R31",
+     "name": "bare-second-line-cut-at-sole-link-two-libs",
+     "weight_start": -1.0226,
+     "weight_now": -1.143
+    },
+    {
+     "id": "R32",
+     "name": "corner-2-2-under-own-pincered-2-3-stone",
+     "weight_start": 1.019,
+     "weight_now": 1.2384
+    },
+    {
+     "id": "R33",
+     "name": "block-under-own-3rd-line-stone-vs-gap-probe",
+     "weight_start": 0.3573,
+     "weight_now": 0.4152
+    },
+    {
+     "id": "R34",
+     "name": "slow-capture-of-sealed-dead-stones",
+     "weight_start": -0.7127,
+     "weight_now": -0.8935
+    },
+    {
+     "id": "R35",
+     "name": "atari-dead-chain-between-own-stones",
+     "weight_start": -0.3178,
+     "weight_now": -0.6076
+    },
+    {
+     "id": "R36",
+     "name": "slow-capture-of-abandoned-inland-stones",
+     "weight_start": -0.3178,
+     "weight_now": -0.3178
+    }
+   ]
+  }
+ },
+ "ablation": {
+  "elo_pooled_rated": {
+   "elo": 1596,
+   "se": 141,
+   "ci95": [
+    1320,
+    1872
+   ],
+   "games": 12,
+   "score": 0.083
+  },
+  "time_per_move_s": 30,
+  "rows": [
+   {
+    "opponent": "lv7",
+    "opponent_elo": 1850,
+    "games": 6,
+    "wins": 1,
+    "losses": 5,
+    "elo": {
+     "elo": 1629,
+     "se": 154,
+     "ci95": [
+      1327,
+      1931
+     ],
+     "games": 6,
+     "score": 0.167
+    },
+    "reviewer": "g170e-b10c128, 1600 visits",
+    "reviewed_moves": 212,
+    "point_loss_per_move": 1.607,
+    "blunders": 20,
+    "match_rate": 0.259,
+    "search_s_per_move": 33.15,
+    "usd_per_move": 0.0
+   },
+   {
+    "opponent": "k1-full",
+    "opponent_elo": null,
+    "games": 2,
+    "wins": 0,
+    "losses": 2,
+    "elo": null,
+    "reviewer": "kata1-tf3-b11c768, 1600 visits",
+    "reviewed_moves": 44,
+    "point_loss_per_move": 2.377,
+    "blunders": 4,
+    "match_rate": 0.318,
+    "search_s_per_move": 33.11,
+    "usd_per_move": 0.0
+   },
+   {
+    "opponent": "lv8",
+    "opponent_elo": 2064,
+    "games": 6,
+    "wins": 0,
+    "losses": 6,
+    "elo": {
+     "elo": 1669,
+     "se": 200,
+     "ci95": [
+      1277,
+      2061
+     ],
+     "games": 6,
+     "score": 0.0
+    },
+    "reviewer": "g170e-b10c128, 1600 visits",
+    "reviewed_moves": 127,
+    "point_loss_per_move": 2.992,
+    "blunders": 26,
+    "match_rate": 0.197,
+    "search_s_per_move": 32.38,
+    "usd_per_move": 0.0
+   }
+  ]
+ },
+ "v1_pilot": {
+  "opponent": "k1-full",
+  "our_color": "B",
+  "result": "W+",
+  "end_reason": "adjudicated",
+  "review": {
+   "moves": 19,
+   "avg_loss": 1.214,
+   "blunders": 0,
+   "match_rate": 0.263,
+   "phases": {
+    "opening": {
+     "moves": 8,
+     "avg_loss": 1.333
+    },
+    "middle": {
+     "moves": 11,
+     "avg_loss": 1.127
+    }
+   },
+   "plies": 38
+  },
+  "per_move": {
+   "cost_usd": 10.7722,
+   "seconds": 736.6,
+   "jobs": 33.0
+  }
+ }
+}

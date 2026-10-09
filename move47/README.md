@@ -803,3 +803,10 @@ Result, run `mcts-strength-20261007` (bundle `results/move47/paper_move47/eviden
 vs k1-p 0-2 (1.45 points lost per move by the kata1 reviewer). Pooled ladder Elo 1801 (95% CI 1466-2136) against
 the code-only ablation's 1596 (1320-1872): the intervals overlap. 1986 model sessions, 873.55 USD (7.16 per
 move); 0 decisions without model input; the book grew from 10 to 36 rules, weights hl-v065 -> hl-v202.
+
+Full game, node `move47::mcts-game` (M10), run `mcts-game-20261008` (bundle
+`results/move47/paper_move47/evidence/mcts-game-20261008/`): the same driver with one stream, as Black against
+k1-full, 1800 s/move, 64 threads, W=8, `--max-nodes 60000000`, learning state continued from mcts-strength
+(`start-state.json`). Lost, adjudicated after 38 plies; 1.836 points lost per move over 19 moves (opening 0.96,
+middle game 2.47) against v1's 1.214 and code-only's 2.377 (all by the kata1 reviewer); 1417 model sessions,
+664.60 USD (34.98 per move); the tree reached the 60M-node cap at about 300M simulations per move.
